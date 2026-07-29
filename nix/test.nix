@@ -1,0 +1,254 @@
+{ pkgs, ... }:
+let
+  certs = import "${pkgs.path}/nixos/tests/common/acme/server/snakeoil-certs.nix";
+  inherit (certs) domain;
+in
+{
+  name = "systemd-creds-openbao";
+
+  nodes.machine =
+    {
+      config,
+      pkgs,
+      lib,
+      ...
+    }:
+    {
+      security.pki.certificateFiles = [ certs.ca.cert ];
+
+      networking.extraHosts = ''
+        127.0.0.1 ${domain}
+      '';
+
+      environment.variables = {
+        BAO_ADDR = config.services.openbao.settings.api_addr;
+        BAO_FORMAT = "json";
+      };
+
+      services.openbao = {
+        enable = true;
+        settings = {
+          listener.default = {
+            type = "tcp";
+            tls_cert_file = certs.${domain}.cert;
+            tls_key_file = certs.${domain}.key;
+          };
+          cluster_addr = "https://127.0.0.1:8201";
+          api_addr = "https://${domain}:8200";
+          storage.raft.path = "/var/lib/openbao";
+          seal.static = {
+            current_key_id = "snakeoil-1";
+            current_key = "file://" + pkgs.writeText "openbao-seal.key" "snakeoil-static-seal-key-32bytes";
+          };
+        };
+      };
+
+      services.systemd-creds-openbao = {
+        enable = true;
+        environment = {
+          BAO_ADDR = "https://${domain}:8200";
+          BAO_CACERT = "${certs.ca.cert}";
+        };
+        # Written by the test script once OpenBao is initialized.
+        credentials = {
+          openbao-token = "/run/keys/openbao-token";
+        };
+        settings = {
+          openbao.auth.token_file = "\${CREDENTIALS_DIRECTORY}/openbao-token";
+          credentials = [
+            {
+              unit = "prometheus.service";
+              credential = "web.yml";
+              path = "systemd/{unit_name}";
+            }
+            # Three specific rules ahead of a catch-all: they only ever
+            # serve if the first match really wins.
+            {
+              unit = "creds-test.service";
+              credential = "binary";
+              path = "systemd/{unit_name}";
+            }
+            {
+              unit = "creds-test.service";
+              credential = "json";
+              path = "systemd/{unit_name}";
+              format = "json";
+            }
+            # field = "data" is the KV v2 version envelope, not a secret key.
+            {
+              unit = "creds-test.service";
+              credential = "raw";
+              backend = "raw";
+              path = "kv/data/systemd/creds-test";
+              field = "data";
+            }
+            {
+              unit = "creds-test.service";
+              path = "systemd/{unit_name}";
+              field = "fallback";
+            }
+          ];
+        };
+      };
+
+      services.prometheus = {
+        enable = true;
+        webConfigFile = "/run/credentials/prometheus.service/web.yml";
+      };
+
+      systemd.services.prometheus = {
+        # Started by the test script: at boot the secret does not exist
+        # yet and web.yml would be served empty.
+        wantedBy = lib.mkForce [ ];
+        serviceConfig = {
+          LoadCredential = [ "web.yml:${config.services.systemd-creds-openbao.socketPath}" ];
+          # Prometheus re-reads the web config file on every request.
+          RefreshOnReload = true;
+        };
+      };
+    };
+
+  testScript =
+    { nodes, ... }:
+    # python
+    ''
+      import base64
+      import json
+
+      SOCKET = "${nodes.machine.services.systemd-creds-openbao.socketPath}"
+      METRICS = "${nodes.machine.services.prometheus.listenAddress}:${toString nodes.machine.services.prometheus.port}/metrics"
+
+      binary_secret = bytes(range(256))
+      binary_b64 = base64.b64encode(binary_secret).decode()
+
+
+      def web_yml(password_hash):
+          return f"basic_auth_users:\n  prom: {password_hash}"
+
+
+      def bcrypt(password):
+          return machine.succeed(f"mkpasswd -m bcrypt {password}").strip()
+
+
+      def fetch_credentials(target, credentials):
+          # The unit name has to be creds-test.service: that is what the
+          # rules grant.
+          loads = " ".join(f"-p LoadCredential={c}:{SOCKET}" for c in credentials)
+          machine.succeed(
+              f"systemd-run --collect --wait --unit=creds-test {loads} "
+              f"cp -r \\''${{CREDENTIALS_DIRECTORY}} {target}"
+          )
+
+
+      start_all()
+      machine.wait_for_unit("multi-user.target")
+
+      with subtest("Initialize OpenBao"):
+          machine.wait_for_unit("openbao.service")
+          machine.wait_for_open_port(8200)
+          init_output = json.loads(machine.succeed("bao operator init"))
+          # The static seal auto-unseals after init; `bao status` exits zero
+          # once it has.
+          machine.wait_until_succeeds("bao status")
+          machine.succeed(f"bao login {init_output['root_token']}")
+          machine.succeed(f"umask 077; printf %s {init_output['root_token']} > /run/keys/openbao-token")
+
+      with subtest("Store secrets"):
+          # One secret per consumer unit, at the paths the rules expand to.
+          machine.succeed("bao secrets enable -version=2 kv")
+          machine.succeed(f"bao kv put -mount=kv systemd/prometheus 'web.yml={web_yml(bcrypt('password1'))}'")
+          machine.succeed(
+              f"bao kv put -mount=kv systemd/creds-test 'binary=base64:{binary_b64}' fallback=fallback-value"
+          )
+
+      with subtest("Prometheus starts with basic auth served from OpenBao"):
+          machine.succeed("systemctl start prometheus.service")
+          machine.wait_for_open_port(${toString nodes.machine.services.prometheus.port})
+          machine.fail(f"curl --fail --silent {METRICS}")
+          machine.fail(f"curl --fail --silent -u prom:password2 {METRICS}")
+          machine.succeed(f"curl --fail --silent -u prom:password1 {METRICS}")
+
+      with subtest("A rotated password applies on reload, and not before"):
+          machine.succeed(f"bao kv put -mount=kv systemd/prometheus 'web.yml={web_yml(bcrypt('password2'))}'")
+          machine.succeed(f"curl --fail --silent -u prom:password1 {METRICS}")
+          machine.fail(f"curl --fail --silent -u prom:password2 {METRICS}")
+          machine.succeed("systemctl reload prometheus.service")
+          machine.succeed(f"curl --fail --silent -u prom:password2 {METRICS}")
+          machine.fail(f"curl --fail --silent -u prom:password1 {METRICS}")
+
+      with subtest("Placeholders, base64, JSON format, raw backend"):
+          # Each of the three credentials is resolved by a different rule.
+          fetch_credentials("/tmp/creds", ["binary", "json", "raw"])
+          t.assertEqual(machine.succeed("base64 -w0 /tmp/creds/binary").strip(), binary_b64)
+          t.assertEqual(
+              json.loads(machine.succeed("cat /tmp/creds/json")),
+              {"binary": f"base64:{binary_b64}", "fallback": "fallback-value"},
+          )
+          # The raw rule's "data" field is a map, so it is served JSON-encoded.
+          t.assertEqual(
+              json.loads(machine.succeed("cat /tmp/creds/raw")),
+              {"binary": f"base64:{binary_b64}", "fallback": "fallback-value"},
+          )
+
+      with subtest("Requests matching no rule are refused with an empty credential"):
+          size = machine.succeed(
+              f"systemd-run --collect --pipe --wait --unit=denied -p LoadCredential=web.yml:{SOCKET} "
+              "stat -c %s \\''${CREDENTIALS_DIRECTORY}/web.yml"
+          ).strip()
+          t.assertEqual(size, "0")
+          machine.succeed("journalctl -u systemd-creds-openbao UNIT=denied.service CREDENTIAL=web.yml --grep 'no credential rule matches'")
+
+      with subtest("Reloading re-reads the configuration in place"):
+          pid = machine.succeed("systemctl show -p MainPID --value systemd-creds-openbao.service").strip()
+          machine.succeed("systemctl reload systemd-creds-openbao.service")
+          t.assertEqual(
+              machine.succeed("systemctl show -p MainPID --value systemd-creds-openbao.service").strip(),
+              pid,
+          )
+          machine.succeed("journalctl -u systemd-creds-openbao --grep 'configuration reloaded'")
+          t.assertEqual(
+              machine.succeed("systemctl show -p StatusText --value systemd-creds-openbao.service").strip(),
+              "serving ${toString (builtins.length nodes.machine.services.systemd-creds-openbao.settings.credentials)}"
+              " credential rules, authenticated with token",
+          )
+          # Requests are still served after the reload.
+          machine.succeed("systemctl reload prometheus.service")
+          machine.succeed(f"curl --fail --silent -u prom:password2 {METRICS}")
+
+      with subtest("The generated policy grants every rule, and nothing else"):
+          # The root token used so far is swapped for one carrying only
+          # the generated policy.
+          machine.succeed(
+              "bao policy write systemd-creds ${nodes.machine.services.systemd-creds-openbao.policyFile}"
+          )
+          scoped = json.loads(machine.succeed("bao token create -policy=systemd-creds"))
+          scoped_token = scoped["auth"]["client_token"]
+          machine.succeed(f"umask 077; printf %s {scoped_token} > /run/keys/openbao-token")
+          # Restart, so this checks the scoped token from a cold start; the
+          # last subtest covers picking one up on reload.
+          machine.succeed("systemctl restart systemd-creds-openbao.service")
+
+          machine.succeed("systemctl reload prometheus.service")
+          machine.succeed(f"curl --fail --silent -u prom:password2 {METRICS}")
+          fetch_credentials("/tmp/creds-scoped", ["binary", "raw"])
+          t.assertEqual(machine.succeed("base64 -w0 /tmp/creds-scoped/binary").strip(), binary_b64)
+          t.assertEqual(
+              json.loads(machine.succeed("cat /tmp/creds-scoped/raw")),
+              {"binary": f"base64:{binary_b64}", "fallback": "fallback-value"},
+          )
+          t.assertIn("deny", machine.succeed(f"bao token capabilities {scoped_token} kv/data/other"))
+
+      with subtest("Reloading picks up the daemon's own rotated token"):
+          # One reload both re-provisions the daemon's token file and
+          # re-authenticates with it. Revoking the old token is what
+          # proves the new one is in use.
+          rotated = json.loads(machine.succeed("bao token create -policy=systemd-creds"))
+          rotated_token = rotated["auth"]["client_token"]
+          machine.succeed(f"umask 077; printf %s {rotated_token} > /run/keys/openbao-token")
+          machine.succeed("systemctl reload systemd-creds-openbao.service")
+          machine.succeed(f"bao token revoke {scoped_token}")
+
+          fetch_credentials("/tmp/creds-rotated", ["binary"])
+          t.assertEqual(machine.succeed("base64 -w0 /tmp/creds-rotated/binary").strip(), binary_b64)
+    '';
+}

@@ -1,0 +1,60 @@
+
+name: CI
+
+on: push
+
+permissions:
+  contents: read
+
+jobs:
+  eval:
+    runs-on: ubuntu-latest
+    outputs:
+      derivations: ${{ steps.eval.outputs.derivations }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: NixOS/nix-installer-action@main
+        with:
+          extra-conf: |
+            extra-substituters = https://nix-community.cachix.org
+            extra-trusted-public-keys = nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs=
+      - uses: Mic92/hestia@v3
+        with:
+          upstream-cache-filter: true
+          upstream-cache-key-names: cache.nixos.org-1 nix-community.cachix.org-1
+      - id: eval
+        name: Run nix-eval-jobs
+        run: |
+          echo "derivations=$(
+            nix run --inputs-from . nixpkgs#nix-eval-jobs -- \
+              --force-recurse --check-cache-status --flake . \
+              --select 'flake: {
+                inherit (flake.outputs) checks packages devShells;
+              }' | jq -cs 'map({attr, isCached})'
+          )" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: eval
+    runs-on: ubuntu-latest
+    name: build (${{ matrix.derivation.attr }})
+    strategy:
+      fail-fast: false
+      matrix:
+        derivation: ${{ fromJson(needs.eval.outputs.derivations) }}
+    steps:
+      - uses: actions/checkout@v7
+        if: ${{ !matrix.derivation.isCached }}
+      - uses: NixOS/nix-installer-action@main
+        if: ${{ !matrix.derivation.isCached }}
+        with:
+          extra-conf: |
+            extra-substituters = https://nix-community.cachix.org
+            extra-trusted-public-keys = nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs=
+      - uses: Mic92/hestia@v3
+        if: ${{ !matrix.derivation.isCached }}
+        with:
+          upstream-cache-filter: true
+          upstream-cache-key-names: cache.nixos.org-1 nix-community.cachix.org-1
+      - run: nix build -L '.#${{ matrix.derivation.attr }}'
+        if: ${{ !matrix.derivation.isCached }}
+

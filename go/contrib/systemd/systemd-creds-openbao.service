@@ -1,0 +1,53 @@
+[Unit]
+Description=OpenBao credential provider for systemd services
+Documentation=https://github.com/kranzes/systemd-creds-openbao
+Requires=systemd-creds-openbao.socket
+After=systemd-creds-openbao.socket network-online.target
+Wants=network-online.target
+
+[Service]
+# The daemon is only ready once it has authenticated to OpenBao, and it
+# re-reads its configuration on SIGHUP, which is what `systemctl reload`
+# sends.
+Type=notify-reload
+ExecStart=systemd-creds-openbao -config /etc/systemd-creds-openbao/config.toml
+Restart=on-failure
+RestartSec=2s
+
+# Re-provision LoadCredential= before the reload, so the daemon's own
+# rotated token file is what it re-authenticates with.
+RefreshOnReload=credentials
+
+DynamicUser=yes
+
+ConfigurationDirectory=systemd-creds-openbao
+
+CapabilityBoundingSet=
+# Core dumps and swap could write secret material to disk.
+LimitCORE=0
+MemorySwapMax=0
+MemoryZSwapMax=0
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+PrivateDevices=yes
+# The identity mapping keeps SO_PEERCRED uids meaningful; the daemon's
+# peer-trust check relies on them.
+PrivateUsers=identity
+ProcSubset=pid
+ProtectClock=yes
+ProtectControlGroups=yes
+ProtectHome=yes
+ProtectHostname=yes
+ProtectKernelLogs=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectProc=invisible
+# AF_NETLINK is needed for getaddrinfo in cgo-built binaries.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+RestrictNamespaces=yes
+RestrictRealtime=yes
+SystemCallArchitectures=native
+SystemCallErrorNumber=EPERM
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged
+UMask=0077

@@ -1,0 +1,37 @@
+# systemd-creds-openbao example configuration.
+#
+# The connection to OpenBao (address, TLS, namespace, timeout) is
+# configured through the client library's environment variables (BAO_ADDR,
+# BAO_CACERT, ...); set them with Environment= on systemd-creds-openbao.service.
+
+[openbao.auth]
+# Token authentication (default). The token comes from a file, ideally a
+# systemd credential passed to systemd-creds-openbao.service itself, e.g.
+# LoadCredential=openbao-token:/path/to/token:
+method = "token"
+token_file = "${CREDENTIALS_DIRECTORY}/openbao-token"
+
+# AppRole authentication. The role ID may be inline; the secret ID can only come
+# from a file, ideally a systemd credential like the token above
+# (LoadCredential=openbao-secret-id:/path/to/secret-id):
+# method = "approle"
+# role_id = "my-role-id"
+# secret_id_file = "${CREDENTIALS_DIRECTORY}/openbao-secret-id"
+# mount = "approle"
+
+# JWT authentication. The JWT can only come from a file (it is re-read on
+# every login, so a rotated token on disk is picked up); the role may be
+# inline:
+# method = "jwt"
+# jwt_file = "${CREDENTIALS_DIRECTORY}/openbao-jwt"
+# jwt_role = "my-role"
+# mount = "jwt"
+
+# Rules map a (unit, credential) request to a secret. First match wins;
+# unmatched requests are refused. See the README for all keys, the raw
+# backend, and path placeholders like {unit_name} and {credential}.
+[[credentials]]
+unit = "myapp.service"
+credential = "db-password"
+path = "myapp/database"
+field = "password"

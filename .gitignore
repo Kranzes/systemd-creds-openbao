@@ -1,0 +1,4 @@
+/systemd-creds-openbao
+/dist/
+/result
+.direnv

@@ -1,0 +1,36 @@
+# Garbage collection for the hestia binary cache.
+
+name: Cache GC
+
+concurrency:
+  group: hestia-gc
+  cancel-in-progress: false
+
+on:
+  schedule:
+    # Daily, off-peak (UTC).
+    - cron: "23 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  gc:
+    runs-on: ubuntu-latest
+    permissions:
+      # REST cache deletes need actions:write.
+      actions: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      - uses: NixOS/nix-installer-action@main
+      - uses: Mic92/hestia@v3
+        with:
+          upstream-cache-filter: true
+      - name: Run garbage collection
+        run: $HESTIA_BIN gc
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+
