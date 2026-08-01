@@ -37,6 +37,9 @@ path = "systemd/{unit_name}"
 
 func TestParseFull(t *testing.T) {
 	cfg, err := Parse([]byte(`
+[openbao]
+serve_stale_for = "1h"
+
 [openbao.auth]
 method = "approle"
 role_id = "my-role"
@@ -59,6 +62,9 @@ format = "json"
 		t.Fatal(err)
 	}
 
+	if cfg.OpenBao.ServeStaleFor != time.Hour {
+		t.Errorf("serve_stale_for = %v, want 1h", cfg.OpenBao.ServeStaleFor)
+	}
 	if r := cfg.Credentials[0]; r.Mount != "kv" {
 		t.Errorf("rule 0 mount = %q, want kv", r.Mount)
 	}
@@ -226,6 +232,16 @@ func TestParseErrors(t *testing.T) {
 			// A bare integer is nanoseconds, so "15" is not "15s".
 			name: "bare integer connection timeout",
 			toml: "[server]\nconnection_timeout = 15",
+			want: "too short to be meant",
+		},
+		{
+			name: "negative serve_stale_for",
+			toml: "[openbao]\nserve_stale_for = \"-1h\"",
+			want: "serve_stale_for must not be negative",
+		},
+		{
+			name: "bare integer serve_stale_for",
+			toml: "[openbao]\nserve_stale_for = 3600",
 			want: "too short to be meant",
 		},
 		{

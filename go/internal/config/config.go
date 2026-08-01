@@ -44,6 +44,13 @@ type Config struct {
 // comes only from the BAO_*/VAULT_* environment variables.
 type OpenBao struct {
 	Auth Auth `toml:"auth"`
+
+	// ServeStaleFor keeps the last successful read of each secret in memory
+	// and serves it when a fresh read fails with a transient error (OpenBao
+	// unreachable, 5xx), for at most this long after it was fetched. An
+	// authoritative refusal (permission denied, missing secret) is never
+	// masked. Zero, the default, disables the fallback and retains nothing.
+	ServeStaleFor time.Duration `toml:"serve_stale_for"`
 }
 
 // Auth configures how the daemon authenticates to OpenBao.
@@ -296,6 +303,11 @@ func (c *Config) validate() error {
 		return fmt.Errorf("server: connection_timeout must not be negative")
 	} else if d < time.Millisecond {
 		return fmt.Errorf("server: connection_timeout %v is too short to be meant; write it as a duration string like \"15s\"", d)
+	}
+	if d := c.OpenBao.ServeStaleFor; d < 0 {
+		return fmt.Errorf("openbao: serve_stale_for must not be negative")
+	} else if d != 0 && d < time.Millisecond {
+		return fmt.Errorf("openbao: serve_stale_for %v is too short to be meant; write it as a duration string like \"1h\"", d)
 	}
 
 	for i := range c.Credentials {

@@ -1,0 +1,222 @@
+package bao
+
+import (
+	"context"
+	"errors"
+	"net/http"
+	"net/url"
+	"testing"
+	"time"
+
+	"github.com/openbao/openbao/api/v2"
+)
+
+// flakyReader serves fixed data until failWith is set.
+type flakyReader struct {
+	data     map[string]any
+	failWith error
+	calls    int
+}
+
+func (f *flakyReader) ReadKV(_ context.Context, _, _ string) (map[string]any, error) {
+	f.calls++
+	if f.failWith != nil {
+		return nil, f.failWith
+	}
+	return f.data, nil
+}
+
+func (f *flakyReader) ReadRaw(_ context.Context, _ string) (map[string]any, error) {
+	f.calls++
+	if f.failWith != nil {
+		return nil, f.failWith
+	}
+	return f.data, nil
+}
+
+var errDown = &url.Error{Op: "Get", URL: "http://bao", Err: errors.New("connection refused")}
+
+// testStaleCache wraps inner with a clock the test advances via the returned
+// pointer.
+func testStaleCache(inner reader, maxAge time.Duration) (*StaleCache, *time.Time) {
+	c := NewStaleCache(inner, maxAge, testLogger())
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	c.now = func() time.Time { return now }
+	return c, &now
+}
+
+func readKV(t *testing.T, c *StaleCache) (map[string]any, error) {
+	t.Helper()
+	return c.ReadKV(context.Background(), "kv", "myapp/db")
+}
+
+func TestStaleCacheReadsFreshWhileHealthy(t *testing.T) {
+	inner := &flakyReader{data: map[string]any{"password": "hunter2"}}
+	c, _ := testStaleCache(inner, time.Hour)
+
+	for range 2 {
+		got, err := readKV(t, c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got["password"] != "hunter2" {
+			t.Fatalf("got %v", got)
+		}
+	}
+	if inner.calls != 2 {
+		t.Fatalf("expected every request to reach OpenBao, got %d reads", inner.calls)
+	}
+}
+
+func TestStaleCacheServesStaleOnTransientError(t *testing.T) {
+	inner := &flakyReader{data: map[string]any{"password": "hunter2"}}
+	c, clock := testStaleCache(inner, time.Hour)
+
+	if _, err := readKV(t, c); err != nil {
+		t.Fatal(err)
+	}
+	inner.failWith = errDown
+	*clock = clock.Add(59 * time.Minute)
+	got, err := readKV(t, c)
+	if err != nil {
+		t.Fatalf("expected stale data, got error %v", err)
+	}
+	if got["password"] != "hunter2" {
+		t.Fatalf("got %v", got)
+	}
+}
+
+func TestStaleCacheRespectsMaxAge(t *testing.T) {
+	inner := &flakyReader{data: map[string]any{"password": "hunter2"}}
+	c, clock := testStaleCache(inner, time.Hour)
+
+	if _, err := readKV(t, c); err != nil {
+		t.Fatal(err)
+	}
+	inner.failWith = errDown
+	*clock = clock.Add(61 * time.Minute)
+	if _, err := readKV(t, c); !errors.Is(err, errDown) {
+		t.Fatalf("expected the read error past the bound, got %v", err)
+	}
+	if len(c.entries) != 0 {
+		t.Fatal("expired entry was retained")
+	}
+}
+
+func TestStaleCacheAgeCountsFromLastSuccess(t *testing.T) {
+	inner := &flakyReader{data: map[string]any{"password": "hunter2"}}
+	c, clock := testStaleCache(inner, time.Hour)
+
+	if _, err := readKV(t, c); err != nil {
+		t.Fatal(err)
+	}
+	*clock = clock.Add(40 * time.Minute)
+	if _, err := readKV(t, c); err != nil {
+		t.Fatal(err)
+	}
+	*clock = clock.Add(40 * time.Minute)
+	inner.failWith = errDown
+	if _, err := readKV(t, c); err != nil {
+		t.Fatalf("expected stale data 40m after the last success, got %v", err)
+	}
+}
+
+func TestStaleCacheNeverMasksAuthoritativeErrors(t *testing.T) {
+	inner := &flakyReader{data: map[string]any{"password": "hunter2"}}
+	c, _ := testStaleCache(inner, time.Hour)
+
+	if _, err := readKV(t, c); err != nil {
+		t.Fatal(err)
+	}
+	for _, err := range []error{
+		&api.ResponseError{StatusCode: http.StatusForbidden},
+		api.ErrSecretNotFound,
+	} {
+		inner.failWith = err
+		if _, got := readKV(t, c); !errors.Is(got, err) {
+			t.Fatalf("expected %v, got %v", err, got)
+		}
+	}
+}
+
+func TestStaleCacheAuthoritativeErrorInvalidatesEntry(t *testing.T) {
+	inner := &flakyReader{data: map[string]any{"password": "hunter2"}}
+	c, _ := testStaleCache(inner, time.Hour)
+
+	if _, err := readKV(t, c); err != nil {
+		t.Fatal(err)
+	}
+	// Access revoked, then OpenBao goes down: the pre-revocation value must
+	// not resurface.
+	inner.failWith = &api.ResponseError{StatusCode: http.StatusForbidden}
+	if _, err := readKV(t, c); err == nil {
+		t.Fatal("expected the permission error")
+	}
+	inner.failWith = errDown
+	if _, err := readKV(t, c); !errors.Is(err, errDown) {
+		t.Fatalf("expected the read error, got %v", err)
+	}
+}
+
+func TestStaleCacheDisabledRetainsNothing(t *testing.T) {
+	inner := &flakyReader{data: map[string]any{"password": "hunter2"}}
+	c, _ := testStaleCache(inner, 0)
+
+	if _, err := readKV(t, c); err != nil {
+		t.Fatal(err)
+	}
+	if len(c.entries) != 0 {
+		t.Fatal("disabled cache retained an entry")
+	}
+	inner.failWith = errDown
+	if _, err := readKV(t, c); !errors.Is(err, errDown) {
+		t.Fatalf("expected the read error, got %v", err)
+	}
+}
+
+func TestStaleCacheKeysRawAndKVSeparately(t *testing.T) {
+	inner := &flakyReader{data: map[string]any{"password": "hunter2"}}
+	c, _ := testStaleCache(inner, time.Hour)
+
+	if _, err := c.ReadRaw(context.Background(), "kv/myapp/db"); err != nil {
+		t.Fatal(err)
+	}
+	inner.failWith = errDown
+	// The KV read resolves to the same location string, but the remembered
+	// raw response must not satisfy it.
+	if _, err := c.ReadKV(context.Background(), "kv", "myapp/db"); !errors.Is(err, errDown) {
+		t.Fatalf("expected the read error, got %v", err)
+	}
+}
+
+func TestStaleCacheSwapKeepsEntries(t *testing.T) {
+	healthy := &flakyReader{data: map[string]any{"password": "hunter2"}}
+	c, _ := testStaleCache(healthy, time.Hour)
+
+	if _, err := readKV(t, c); err != nil {
+		t.Fatal(err)
+	}
+	c.Swap(&flakyReader{failWith: errDown}, time.Hour)
+	got, err := readKV(t, c)
+	if err != nil {
+		t.Fatalf("expected the entry to survive the swap, got %v", err)
+	}
+	if got["password"] != "hunter2" {
+		t.Fatalf("got %v", got)
+	}
+}
+
+func TestStaleCacheSwapToZeroDropsEntries(t *testing.T) {
+	inner := &flakyReader{data: map[string]any{"password": "hunter2"}}
+	c, _ := testStaleCache(inner, time.Hour)
+
+	if _, err := readKV(t, c); err != nil {
+		t.Fatal(err)
+	}
+	c.Swap(inner, 0)
+	c.Swap(inner, time.Hour)
+	inner.failWith = errDown
+	if _, err := readKV(t, c); !errors.Is(err, errDown) {
+		t.Fatalf("expected the read error after disabling dropped the entries, got %v", err)
+	}
+}

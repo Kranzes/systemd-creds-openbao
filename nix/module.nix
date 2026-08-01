@@ -92,6 +92,7 @@ in
       '';
       description = ''
         Contents of the daemon's TOML configuration file:
+        [`[openbao]`](https://github.com/kranzes/systemd-creds-openbao#openbao),
         [`[openbao.auth]`](https://github.com/kranzes/systemd-creds-openbao#openbaoauth),
         [`[[credentials]]`](https://github.com/kranzes/systemd-creds-openbao#credentials),
         and [`[server]`](https://github.com/kranzes/systemd-creds-openbao#server).

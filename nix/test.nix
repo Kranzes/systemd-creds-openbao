@@ -54,6 +54,7 @@ in
           openbao-token = "/run/keys/openbao-token";
         };
         settings = {
+          openbao.serve_stale_for = "1h";
           openbao.auth.token_file = "\${CREDENTIALS_DIRECTORY}/openbao-token";
           credentials = [
             {
@@ -250,5 +251,23 @@ in
 
           fetch_credentials("/tmp/creds-rotated", ["binary"])
           t.assertEqual(machine.succeed("base64 -w0 /tmp/creds-rotated/binary").strip(), binary_b64)
+
+      with subtest("Stale secrets are served while OpenBao is down"):
+          machine.succeed("systemctl stop openbao.service")
+          fetch_credentials("/tmp/creds-stale", ["binary"])
+          t.assertEqual(machine.succeed("base64 -w0 /tmp/creds-stale/binary").strip(), binary_b64)
+          machine.succeed(
+              "journalctl -u systemd-creds-openbao SECRET_PATH=kv/systemd/creds-test --grep 'serving stale secret data'"
+          )
+
+      with subtest("Fresh reads resume once OpenBao is back"):
+          machine.succeed("systemctl start openbao.service")
+          machine.wait_for_open_port(8200)
+          machine.wait_until_succeeds("bao status")
+          # Rotating the secret is what proves the next read is fresh, not
+          # the remembered response again.
+          machine.succeed("bao kv put -mount=kv systemd/creds-test fallback=rotated-value")
+          fetch_credentials("/tmp/creds-fresh", ["fallback"])
+          t.assertEqual(machine.succeed("cat /tmp/creds-fresh/fallback"), "rotated-value")
     '';
 }

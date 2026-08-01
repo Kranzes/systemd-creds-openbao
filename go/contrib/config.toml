@@ -4,6 +4,14 @@
 # configured through the client library's environment variables (BAO_ADDR,
 # BAO_CACERT, ...); set them with Environment= on systemd-creds-openbao.service.
 
+[openbao]
+# Keep the last successfully read value of each secret in memory and serve
+# it when a fresh read fails because OpenBao could not answer (unreachable,
+# 5xx), for at most this long after it was read. Permission errors and
+# missing secrets are never masked. Off by default: nothing is retained and
+# every failure surfaces as an empty credential.
+# serve_stale_for = "1h"
+
 [openbao.auth]
 # Token authentication (default). The token comes from a file, ideally a
 # systemd credential passed to systemd-creds-openbao.service itself, e.g.

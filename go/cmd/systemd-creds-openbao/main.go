@@ -108,8 +108,12 @@ func run() int {
 		return 1
 	}
 
+	// The cache outlives reloads, so responses fetched before a SIGHUP still
+	// cover an outage after it.
+	cache := bao.NewStaleCache(client, cfg.OpenBao.ServeStaleFor, log)
+
 	srv := credserver.New(
-		secrets.NewResolver(cfg.Credentials, client),
+		secrets.NewResolver(cfg.Credentials, cache),
 		log,
 		cfg.Server.ConnectionTimeout,
 	)
@@ -117,6 +121,7 @@ func run() int {
 		configPath: *configPath,
 		log:        log,
 		srv:        srv,
+		cache:      cache,
 		cfg:        cfg,
 		stopClient: stopClient,
 	}
@@ -150,6 +155,7 @@ type service struct {
 	configPath string
 	log        *slog.Logger
 	srv        *credserver.Server
+	cache      *bao.StaleCache
 
 	cfg        *config.Config
 	stopClient context.CancelFunc
@@ -188,7 +194,8 @@ func (s *service) reload(ctx context.Context) {
 
 	// Swap before stopping the previous client: in-flight requests still
 	// hold it, and its token has to stay valid for them.
-	s.srv.Reload(secrets.NewResolver(cfg.Credentials, client), cfg.Server.ConnectionTimeout)
+	s.cache.Swap(client, cfg.OpenBao.ServeStaleFor)
+	s.srv.Reload(secrets.NewResolver(cfg.Credentials, s.cache), cfg.Server.ConnectionTimeout)
 	s.stopClient()
 	s.stopClient, s.cfg = stopClient, cfg
 	s.log.Info("configuration reloaded", "RULES", len(cfg.Credentials))

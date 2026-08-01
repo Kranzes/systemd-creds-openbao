@@ -28,8 +28,9 @@ encodes the requesting unit and the credential ID
 (`\0RANDOM/unit/myapp.service/db-password`, see
 [systemd.exec(5)](https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html#LoadCredential=ID:PATH)).
 `systemd-creds-openbao` reads that peer name with `getpeername(2)`, matches it
-against its rule list, reads the secret, writes the payload and closes. Nothing
-is cached.
+against its rule list, reads the secret, writes the payload and closes. Every
+request is a fresh read from OpenBao; nothing is served from memory unless
+`serve_stale_for` is set and OpenBao cannot answer.
 
 The peer name is the whole authentication, so the socket must only be reachable
 by the service manager. The shipped socket unit makes it `root:root` mode
@@ -68,6 +69,19 @@ the client library reads, with `VAULT_*` fallbacks:
 Environment=BAO_ADDR=https://openbao.example.com:8200
 Environment=BAO_CACERT=/etc/ssl/certs/openbao-ca.pem
 ```
+
+### `[openbao]`
+
+| Key | Default | Description |
+| --- | --- | --- |
+| `serve_stale_for` | off | Keep the last successful read of each secret in memory and serve it when a fresh read fails because OpenBao could not answer (unreachable, 5xx), for at most this long after it was fetched, e.g. `"30m"` or `"1h"` |
+
+The fallback never replaces a fresh read: while OpenBao answers, every request
+reaches it, and an authoritative refusal (permission denied, missing secret)
+is passed through and drops the remembered value, so a revoked or deleted
+secret cannot resurface during a later outage. Unset, nothing is retained in
+memory. See [Failure behavior](#failure-behavior) for what serving stale
+looks like.
 
 ### `[openbao.auth]`
 
@@ -173,7 +187,7 @@ each one expires on its own.
 
 | Key | Default | Description |
 | --- | --- | --- |
-| `connection_timeout` | `"15s"` | Bounds the read from OpenBao and, separately, the write back. Write a duration string: a bare integer is nanoseconds and is rejected |
+| `connection_timeout` | `"15s"` | Bounds the read from OpenBao and, separately, the write back, e.g. `"5s"` or `"1m"` |
 
 ## The daemon's own policy
 
@@ -261,6 +275,20 @@ $ journalctl -u systemd-creds-openbao SECRET_PATH=kv/myapp/database
 mount-qualified for `kv`, so it pastes into `bao kv get`, and the API path
 itself for `raw`, so it pastes into `bao read`. It is not the policy path,
 which carries KV v2's `data/` infix (`kv/data/myapp/database`).
+
+With `serve_stale_for` set, a read failing because OpenBao could not answer
+falls back to the last successful response for that secret, so a service can
+still (re)start during an outage. The journal carries a warning with the same
+`SECRET_PATH=` field plus the age of what was served:
+
+```console
+read failed, serving stale secret data SECRET_PATH=kv/myapp/database AGE=4m12s
+```
+
+A secret rotated during the outage is served in its pre-outage form until
+OpenBao returns or the bound expires. Entries live only in daemon memory:
+they survive a reload but not a restart, so the fallback covers a machine
+that has fetched the credential before, not a boot during the outage.
 
 To fail closed rather than start with an empty secret:
 
