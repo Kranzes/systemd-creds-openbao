@@ -49,10 +49,6 @@ in
           BAO_ADDR = "https://${domain}:8200";
           BAO_CACERT = "${certs.ca.cert}";
         };
-        # Written by the test script once OpenBao is initialized.
-        credentials = {
-          openbao-token = "/run/keys/openbao-token";
-        };
         settings = {
           openbao.serve_stale_for = "1h";
           openbao.auth.token_file = "\${CREDENTIALS_DIRECTORY}/openbao-token";
@@ -91,6 +87,11 @@ in
           ];
         };
       };
+
+      # Written by the test script once OpenBao is initialized.
+      systemd.services.systemd-creds-openbao.serviceConfig.LoadCredential = [
+        "openbao-token:/run/keys/openbao-token"
+      ];
 
       services.prometheus = {
         enable = true;

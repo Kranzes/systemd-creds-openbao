@@ -39,20 +39,6 @@ in
       '';
     };
 
-    credentials = lib.mkOption {
-      type = lib.types.attrsOf lib.types.externalPath;
-      default = { };
-      example = {
-        openbao-token = "/run/secrets/openbao-token";
-      };
-      description = ''
-        Credential files loaded into the daemon with `LoadCredential=`
-        (see {manpage}`systemd.exec(5)`); each becomes readable by it as
-        `''${CREDENTIALS_DIRECTORY}/<name>`, e.g. for
-        {option}`services.systemd-creds-openbao.settings.openbao.auth.token_file`.
-      '';
-    };
-
     environment = lib.mkOption {
       type = lib.types.attrsOf lib.types.str;
       default = { };
@@ -67,8 +53,8 @@ in
         [The connection](https://github.com/kranzes/systemd-creds-openbao#the-connection).
 
         These end up in the world-readable unit file, so they take connection
-        settings only. Pass the token and any other confidential material with
-        {option}`services.systemd-creds-openbao.credentials`.
+        settings only; pass secret material as systemd credentials instead
+        (see {option}`services.systemd-creds-openbao.settings`).
       '';
     };
 
@@ -96,6 +82,14 @@ in
         [`[openbao.auth]`](https://github.com/kranzes/systemd-creds-openbao#openbaoauth),
         [`[[credentials]]`](https://github.com/kranzes/systemd-creds-openbao#credentials),
         and [`[server]`](https://github.com/kranzes/systemd-creds-openbao#server).
+
+        Pass the token and any other confidential material to the daemon as
+        systemd credentials, in whichever form fits your secret management:
+        `LoadCredential=`, `ImportCredential=`, or their encrypted variants on
+        {option}`systemd.services.systemd-creds-openbao.serviceConfig` (see
+        {manpage}`systemd.exec(5)`). Each credential is readable by the daemon
+        as `''${CREDENTIALS_DIRECTORY}/<name>`, which any of the `*_file`
+        settings under `[openbao.auth]` can reference, as the example shows.
       '';
     };
 
@@ -137,7 +131,6 @@ in
           ""
           "${lib.getExe cfg.package} -config ${configFile}"
         ];
-        LoadCredential = lib.mapAttrsToList (name: path: "${name}:${toString path}") cfg.credentials;
       };
     };
   };
