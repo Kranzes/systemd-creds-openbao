@@ -31,6 +31,13 @@ type Server struct {
 	log *slog.Logger
 	cur atomic.Pointer[serving]
 
+	// served and refused split every handled connection: refused covers
+	// anything not answered with a credential, untrusted peers and
+	// protocol errors included.
+	served, refused atomic.Uint64
+	// statsCh carries a coalesced signal that the counters changed.
+	statsCh chan struct{}
+
 	// trustUID is a second uid to accept beyond root. It is zero in
 	// production; the tests set it because they connect as whoever runs them.
 	trustUID uint32
@@ -46,9 +53,22 @@ type serving struct {
 // bounds the backend fetch and the payload write separately; zero or negative
 // means no limit.
 func New(resolver Resolver, log *slog.Logger, connTimeout time.Duration) *Server {
-	s := &Server{log: log}
+	s := &Server{log: log, statsCh: make(chan struct{}, 1)}
 	s.Reload(resolver, connTimeout)
 	return s
+}
+
+// Stats returns how many requests have been served and refused since the
+// server was created. Refused counts every connection that did not end in a
+// credential, whatever the reason.
+func (s *Server) Stats() (served, refused uint64) {
+	return s.served.Load(), s.refused.Load()
+}
+
+// StatsUpdates signals after a request changed the counters. The channel
+// coalesces, so one receive may cover several requests.
+func (s *Server) StatsUpdates() <-chan struct{} {
+	return s.statsCh
 }
 
 // Reload puts a new resolver and connection timeout into effect. A request
@@ -91,6 +111,19 @@ func (s *Server) Serve(l net.Listener) error {
 // which the requesting unit sees as an empty credential.
 func (s *Server) handle(conn net.Conn) {
 	defer func() { _ = conn.Close() }()
+
+	served := false
+	defer func() {
+		if served {
+			s.served.Add(1)
+		} else {
+			s.refused.Add(1)
+		}
+		select {
+		case s.statsCh <- struct{}{}:
+		default:
+		}
+	}()
 
 	uc, ok := conn.(*net.UnixConn)
 	if !ok || !s.peerTrusted(uc) {
@@ -142,6 +175,7 @@ func (s *Server) handle(conn net.Conn) {
 	}
 	// Half-close so the requester sees EOF promptly.
 	_ = uc.CloseWrite()
+	served = true
 	log.Info(fmt.Sprintf("served credential %q from %q for %q", req.Credential, secretPath, req.Unit))
 }
 

@@ -179,6 +179,55 @@ func TestServerRejectsUnboundPeer(t *testing.T) {
 	}
 }
 
+func TestServerStats(t *testing.T) {
+	srv := newServer(resolverFunc(func(_ context.Context, req Request) ([]byte, string, error) {
+		if req.Credential == "denied" {
+			return nil, "", errors.New("no such secret")
+		}
+		return []byte("ok"), "test/path", nil
+	}))
+	socket := serve(t, srv)
+
+	// The served counter increments after the requester already has its
+	// EOF, so the update signal is what makes Stats current.
+	expect := func(served, refused uint64) {
+		t.Helper()
+		select {
+		case <-srv.StatsUpdates():
+		case <-time.After(5 * time.Second):
+			t.Fatal("no stats update arrived")
+		}
+		if s, r := srv.Stats(); s != served || r != refused {
+			t.Errorf("got %d served, %d refused, want %d served, %d refused", s, r, served, refused)
+		}
+	}
+
+	if _, err := fetch(t, socket, "foobar.service", "cred"); err != nil {
+		t.Fatal(err)
+	}
+	expect(1, 0)
+
+	if _, err := fetch(t, socket, "foobar.service", "denied"); err != nil {
+		t.Fatal(err)
+	}
+	expect(1, 1)
+
+	// A connection rejected before the protocol even starts is a refusal
+	// too: every connection lands in exactly one counter.
+	conn, err := net.Dial("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close() }()
+	if err := conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.ReadAll(conn); err != nil {
+		t.Fatal(err)
+	}
+	expect(1, 2)
+}
+
 func TestServerCredentialSizeLimit(t *testing.T) {
 	socket := startServer(t, resolverFunc(func(_ context.Context, req Request) ([]byte, string, error) {
 		if req.Credential == "at-limit" {

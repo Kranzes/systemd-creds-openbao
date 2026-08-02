@@ -144,6 +144,8 @@ func run() int {
 		case err := <-serveErr:
 			log.Error("serve failed", "ERROR", err)
 			return 1
+		case <-srv.StatsUpdates():
+			notify(log, svc.status())
 		case <-reload:
 			svc.reload(ctx)
 		}
@@ -201,11 +203,17 @@ func (s *service) reload(ctx context.Context) {
 	s.log.Info("configuration reloaded", "RULES", len(cfg.Credentials))
 }
 
-// notifyReady reports readiness and summarizes what is in effect for
-// `systemctl status`.
+// status summarizes for `systemctl status` what is in effect and how many
+// requests have been served and refused since the daemon started.
+func (s *service) status() string {
+	served, refused := s.srv.Stats()
+	return fmt.Sprintf("STATUS=serving %d credential rules, authenticated with %s; %d served, %d refused",
+		len(s.cfg.Credentials), s.cfg.OpenBao.Auth.Method, served, refused)
+}
+
+// notifyReady reports readiness along with the status summary.
 func (s *service) notifyReady() {
-	notify(s.log, fmt.Sprintf("%s\nSTATUS=serving %d credential rules, authenticated with %s",
-		daemon.SdNotifyReady, len(s.cfg.Credentials), s.cfg.OpenBao.Auth.Method))
+	notify(s.log, daemon.SdNotifyReady+"\n"+s.status())
 }
 
 // notify sends a state update to the service manager. It does nothing when

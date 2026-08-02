@@ -242,7 +242,9 @@ dropping the socket or restarting the daemon:
 
 Under `Type=notify-reload` the daemon counts as started only once it has
 authenticated, and `systemctl status` reports the rule count and auth method in
-use.
+use, plus how many requests it has served and refused. Refused counts every
+connection not answered with a credential, whatever the reason. The counters
+survive a reload and start over on a restart.
 
 ## Failure behavior
 

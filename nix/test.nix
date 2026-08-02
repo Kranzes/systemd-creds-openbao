@@ -208,10 +208,12 @@ in
               pid,
           )
           machine.succeed("journalctl -u systemd-creds-openbao --grep 'configuration reloaded'")
+          # The counters cover every request so far: prometheus's start and
+          # reload, the three creds-test fetches, and the denied request.
           t.assertEqual(
               machine.succeed("systemctl show -p StatusText --value systemd-creds-openbao.service").strip(),
               "serving ${toString (builtins.length nodes.machine.services.systemd-creds-openbao.settings.credentials)}"
-              " credential rules, authenticated with token",
+              " credential rules, authenticated with token; 5 served, 1 refused",
           )
           # Requests are still served after the reload.
           machine.succeed("systemctl reload prometheus.service")
