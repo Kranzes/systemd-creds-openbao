@@ -1,0 +1,15 @@
+{
+  "version": "1",
+  "sources": {
+    "nixpkgs": {
+      "type": "GitHub",
+      "fetchType": "tarball",
+      "owner": "NixOS",
+      "repo": "nixpkgs",
+      "branch": "nixpkgs-unstable",
+      "revision": "a5cbcfe954791221bfffe2307f7d1a1bf61a871e",
+      "url": "https://github.com/NixOS/nixpkgs/archive/a5cbcfe954791221bfffe2307f7d1a1bf61a871e.tar.gz",
+      "hash": "sha256-z7D96eESRM4CPV/XtwpwFn8IDdfLAmxz6lVWrGYXvR4="
+    }
+  }
+}

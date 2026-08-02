@@ -1,4 +1,3 @@
-
 name: CI
 
 on: push
@@ -26,11 +25,9 @@ jobs:
         name: Run nix-eval-jobs
         run: |
           echo "derivations=$(
-            nix run --inputs-from . nixpkgs#nix-eval-jobs -- \
-              --force-recurse --check-cache-status --flake . \
-              --select 'flake: {
-                inherit (flake.outputs) checks packages devShells;
-              }' | jq -cs 'map({attr, isCached})'
+            nix run --impure --expr 'import (import ./lon.nix).nixpkgs { }' nix-eval-jobs -- \
+              --select 'jobs: removeAttrs jobs [ "formatter" ]' \
+              --check-cache-status . | jq -cs 'map({attr, isCached})'
           )" >> "$GITHUB_OUTPUT"
 
   build:
@@ -55,6 +52,6 @@ jobs:
         with:
           upstream-cache-filter: true
           upstream-cache-key-names: cache.nixos.org-1 nix-community.cachix.org-1
-      - run: nix build -L '.#${{ matrix.derivation.attr }}'
+      - run: nix build -f . '${{ matrix.derivation.attr }}' -L
         if: ${{ !matrix.derivation.isCached }}
 

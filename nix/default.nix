@@ -1,44 +1,51 @@
-{ inputs, withSystem, ... }:
-{
-  imports = [ inputs.treefmt-nix.flakeModule ];
+{ pkgs, lib }:
 
-  perSystem =
-    { pkgs, config, ... }:
-    {
-      packages = {
-        systemd-creds-openbao = pkgs.callPackage ./package.nix { };
-        default = config.packages.systemd-creds-openbao;
+rec {
+  packages = lib.recurseIntoAttrs {
+    systemd-creds-openbao = pkgs.callPackage ./package.nix { };
+  };
+
+  devShells = lib.recurseIntoAttrs {
+    systemd-creds-openbao = pkgs.mkShell {
+      name = "systemd-creds-openbao";
+      inputsFrom = [ packages.systemd-creds-openbao ];
+      packages = [
+        formatter
+        pkgs.gopls
+      ];
+    };
+  };
+
+  formatter = pkgs.treefmt.withConfig {
+    settings.formatter = {
+      nixfmt = {
+        command = lib.getExe pkgs.nixfmt;
+        includes = [ "*.nix" ];
       };
 
-      devShells = {
-        systemd-creds-openbao = pkgs.mkShell {
-          name = "systemd-creds-openbao";
-          inputsFrom = [ config.packages.systemd-creds-openbao ];
-          packages = with pkgs; [
-            gopls
-          ];
-        };
-        default = config.devShells.systemd-creds-openbao;
-      };
-
-      treefmt = {
-        projectRootFile = "flake.nix";
-        programs.gofumpt.enable = true;
-        programs.nixfmt.enable = true;
-      };
-
-      checks.nixos-test = pkgs.testers.runNixOSTest {
-        imports = [ ./test.nix ];
-        defaults.imports = [ inputs.self.nixosModules.default ];
+      gofumpt = {
+        command = lib.getExe pkgs.gofumpt;
+        includes = [ "*.go" ];
       };
     };
+  };
 
-  flake.nixosModules.default =
-    { pkgs, lib, ... }:
-    {
-      imports = [ ./module.nix ];
-      services.systemd-creds-openbao.package = lib.mkDefault (
-        withSystem pkgs.stdenv.hostPlatform.system ({ config, ... }: config.packages.systemd-creds-openbao)
-      );
+  nixosModules.systemd-creds-openbao = {
+    imports = [ ./module.nix ];
+    services.systemd-creds-openbao.package = lib.mkDefault packages.systemd-creds-openbao;
+  };
+
+  checks = lib.recurseIntoAttrs {
+    formatting = formatter.check (
+      lib.fileset.toSource {
+        root = ../.;
+        fileset = lib.fileset.gitTracked ../.;
+      }
+    );
+
+    nixos-test = pkgs.testers.runNixOSTest {
+      imports = [ ./test.nix ];
+      defaults.imports = [ nixosModules.systemd-creds-openbao ];
     };
+  };
 }
