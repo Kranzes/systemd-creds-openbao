@@ -34,8 +34,8 @@ request is a fresh read from OpenBao; nothing is served from memory unless
 
 The peer name is the whole authentication, so the socket must only be reachable
 by the service manager. The shipped socket unit makes it `root:root` mode
-`0600`, and the daemon backs that with an `SO_PEERCRED` check that answers only
-uid 0 or its own uid, which `PrivateUsers=identity` in the service unit keeps
+`0600`, and the daemon backs that with an `SO_PEERCRED` check that answers
+only uid 0, which `PrivateUsers=identity` in the service unit keeps
 meaningful.
 
 ## Configuration
