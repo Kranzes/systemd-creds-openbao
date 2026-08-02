@@ -291,8 +291,7 @@ func TestReadRejectsOversizedResponse(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	c, err := New(ctx, tokenConfig(t, srv), testLogger())
 	if err != nil {
 		t.Fatal(err)
