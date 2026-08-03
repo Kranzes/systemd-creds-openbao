@@ -8,29 +8,37 @@ import (
 	"github.com/kranzes/systemd-creds-openbao/go/internal/config"
 )
 
-func generate(t *testing.T, cfgTOML string) string {
+func rules(t *testing.T, cfgTOML string) []config.Credential {
 	t.Helper()
 	cfg, err := config.Parse([]byte(cfgTOML))
 	if err != nil {
 		t.Fatal(err)
 	}
-	return Generate(cfg.Credentials)
+	return cfg.Credentials
 }
 
-// paths returns the paths the policy grants, in the order they appear.
-func paths(hcl string) []string {
+// paths returns the paths the grants allow, in the order they appear.
+func paths(grants []Grant) []string {
 	var out []string
-	for line := range strings.SplitSeq(hcl, "\n") {
-		if rest, ok := strings.CutPrefix(line, `path "`); ok {
-			p, _, _ := strings.Cut(rest, `"`)
-			out = append(out, p)
+	for _, g := range grants {
+		out = append(out, g.Path)
+	}
+	return out
+}
+
+// widened returns the paths granted more broadly than the rules read.
+func widened(grants []Grant) []string {
+	var out []string
+	for _, g := range grants {
+		if g.Widened {
+			out = append(out, g.Path)
 		}
 	}
 	return out
 }
 
 func TestGenerate(t *testing.T) {
-	got := generate(t, `
+	r := rules(t, `
 [[credentials]]
 unit = "myapp.service"
 credential = "db-password"
@@ -63,10 +71,10 @@ field = "username"
 		"secret/data/systemd/+/+",
 		"database/creds/myapp",
 	}
-	if p := paths(got); !slices.Equal(p, want) {
+	if p := paths(Grants(r)); !slices.Equal(p, want) {
 		t.Errorf("granted paths = %q, want %q", p, want)
 	}
-	if !strings.Contains(got, `capabilities = ["read"]`) {
+	if got := Generate(r); !strings.Contains(got, `capabilities = ["read"]`) {
 		t.Errorf("policy grants no read capability:\n%s", got)
 	}
 }
@@ -74,7 +82,7 @@ field = "username"
 func TestGeneratePinsPlaceholdersTheGlobsDetermine(t *testing.T) {
 	// A rule whose globs carry no metacharacters matches one unit and one
 	// credential ID, so it resolves to a single path and needs no wildcard.
-	got := generate(t, `
+	r := rules(t, `
 [[credentials]]
 unit = "nginx.service"
 credential = "tls-key"
@@ -98,28 +106,31 @@ path = "systemd/{unit_name}/{credential}"
 		"kv/data/systemd/site-prod/config",
 		"kv/data/systemd/+/db",
 	}
-	if p := paths(got); !slices.Equal(p, want) {
+	if p := paths(Grants(r)); !slices.Equal(p, want) {
 		t.Errorf("granted paths = %q, want %q", p, want)
 	}
-	if strings.Contains(got, "# NOTE:") {
-		t.Errorf("policy reports widening where a placeholder was pinned:\n%s", got)
+	if w := widened(Grants(r)); len(w) != 0 {
+		t.Errorf("grants widened where a placeholder was pinned: %q", w)
 	}
 }
 
 func TestGenerateWidensPartialSegments(t *testing.T) {
 	// Policy wildcards cover a whole segment, so a segment mixing literal
 	// text with a placeholder is granted more broadly than the rule reads.
-	got := generate(t, `
+	r := rules(t, `
 [[credentials]]
 unit = "web@*.service"
 path = "systemd/site-{instance}/config"
 `)
 
 	want := []string{"kv/data/systemd/+/config"}
-	if p := paths(got); !slices.Equal(p, want) {
+	if p := paths(Grants(r)); !slices.Equal(p, want) {
 		t.Errorf("granted paths = %q, want %q", p, want)
 	}
-	if !strings.Contains(got, "# NOTE:") {
+	if w := widened(Grants(r)); !slices.Equal(w, want) {
+		t.Errorf("widened = %q, want %q", w, want)
+	}
+	if got := Generate(r); !strings.Contains(got, "# NOTE:") {
 		t.Errorf("policy does not flag the widened segment:\n%s", got)
 	}
 }

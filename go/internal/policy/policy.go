@@ -19,28 +19,43 @@ const header = `# OpenBao policy for systemd-creds-openbao, generated with -prin
 # https://github.com/kranzes/systemd-creds-openbao#the-daemons-own-policy
 `
 
-// Generate returns an HCL policy covering rules, ready for "bao policy write".
-func Generate(rules []config.Credential) string {
-	// Policy path -> whether a segment had to be widened, plus the order the
-	// rules first ask for them in.
-	paths := map[string]bool{}
-	var order []string
+// Grant is one path the generated policy allows the daemon's token to read.
+type Grant struct {
+	// Path is the OpenBao policy path, where "+" is a single-segment wildcard.
+	Path string
+	// Widened reports that a segment mixing a placeholder with literal text had
+	// to become a whole wildcard, granting more than the rules can read.
+	Widened bool
+}
+
+// Grants returns the paths rules need, deduplicated, in the order the rules
+// first ask for them. Generate renders these; callers that want to reason about
+// what the policy allows should read them rather than parse the HCL.
+func Grants(rules []config.Credential) []Grant {
+	at := map[string]int{}
+	var out []Grant
 	for _, r := range rules {
 		p, widened := policyPath(r)
-		if _, seen := paths[p]; !seen {
-			order = append(order, p)
+		if i, seen := at[p]; seen {
+			out[i].Widened = out[i].Widened || widened
+			continue
 		}
-		paths[p] = paths[p] || widened
+		at[p] = len(out)
+		out = append(out, Grant{Path: p, Widened: widened})
 	}
+	return out
+}
 
+// Generate returns an HCL policy covering rules, ready for "bao policy write".
+func Generate(rules []config.Credential) string {
 	var b strings.Builder
 	b.WriteString(header)
-	for _, p := range order {
+	for _, g := range Grants(rules) {
 		b.WriteString("\n")
-		if paths[p] {
+		if g.Widened {
 			b.WriteString("# NOTE: a placeholder shares this segment with literal text; widened.\n")
 		}
-		fmt.Fprintf(&b, "path %q {\n  capabilities = [\"read\"]\n}\n", p)
+		fmt.Fprintf(&b, "path %q {\n  capabilities = [\"read\"]\n}\n", g.Path)
 	}
 	return b.String()
 }

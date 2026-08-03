@@ -3,9 +3,7 @@ package secrets
 import (
 	"bytes"
 	"context"
-	"regexp"
 	"slices"
-	"strconv"
 	"strings"
 	"testing"
 
@@ -56,7 +54,7 @@ func FuzzResolve(f *testing.F) {
 			t.Skip()
 		}
 
-		r := NewResolver(cfg.Credentials, &checkingReader{t: t, policy: policyPaths(t, cfg.Credentials)})
+		r := NewResolver(cfg.Credentials, &checkingReader{t: t, policy: policyPaths(cfg.Credentials)})
 		r.Resolve(context.Background(), credserver.Request{Unit: unit, Credential: credential})
 	})
 }
@@ -120,18 +118,11 @@ func covers(policyPath, read string) bool {
 	return true
 }
 
-var policyPathRe = regexp.MustCompile(`(?m)^path (".*") \{$`)
-
-// policyPaths extracts the quoted path of every block Generate rendered.
-func policyPaths(t *testing.T, rules []config.Credential) []string {
-	t.Helper()
+// policyPaths is what the generated policy grants.
+func policyPaths(rules []config.Credential) []string {
 	var paths []string
-	for _, m := range policyPathRe.FindAllStringSubmatch(policy.Generate(rules), -1) {
-		p, err := strconv.Unquote(m[1])
-		if err != nil {
-			t.Fatalf("unquoting %s from the generated policy: %v", m[1], err)
-		}
-		paths = append(paths, p)
+	for _, g := range policy.Grants(rules) {
+		paths = append(paths, g.Path)
 	}
 	return paths
 }
