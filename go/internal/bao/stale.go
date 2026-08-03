@@ -3,6 +3,7 @@ package bao
 import (
 	"context"
 	"log/slog"
+	"maps"
 	"sync"
 	"time"
 
@@ -58,7 +59,16 @@ func (s *StaleCache) Swap(inner reader, maxAge time.Duration) {
 	s.maxAge = maxAge
 	if maxAge <= 0 {
 		clear(s.entries)
+		return
 	}
+	// A secret read once and never again is reclaimed by nothing else, since
+	// Read only ever revisits the ref in front of it. Sweeping here keeps that
+	// off the request path while still bounding how long an entry that can no
+	// longer be served keeps secret material alive.
+	now := s.now()
+	maps.DeleteFunc(s.entries, func(_ config.SecretRef, e entry) bool {
+		return now.Sub(e.at) > maxAge
+	})
 }
 
 // Read implements secrets.Reader. It does the fresh read and falls back to the
