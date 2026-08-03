@@ -148,6 +148,22 @@ func PinnedValues(unitGlob, credentialGlob string) map[string]string {
 	return pinned
 }
 
+// Replacer substitutes the placeholders values has an entry for and leaves the
+// rest in place. Package secrets passes what a request fixes, package policy
+// only what a rule's globs pin, so a placeholder still free survives to become
+// a wildcard. Both drive it from Placeholders, which is what keeps the path a
+// request reads and the path the policy grants in step. Callers reuse one
+// replacer across every template of the same request or rule.
+func Replacer(values map[string]string) *strings.Replacer {
+	pairs := make([]string, 0, 2*len(values))
+	for _, p := range Placeholders {
+		if v, ok := values[p]; ok {
+			pairs = append(pairs, p, v)
+		}
+	}
+	return strings.NewReplacer(pairs...)
+}
+
 func isLiteralGlob(glob string) bool {
 	return !strings.ContainsAny(glob, `*?[\`)
 }

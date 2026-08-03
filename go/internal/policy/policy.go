@@ -56,11 +56,11 @@ func policyPath(r config.Credential) (path string, widened bool) {
 	// A rule matching one unit and one credential ID resolves to one path, so
 	// substituting what its globs pin keeps those segments literal instead of
 	// spending a wildcard on a value that can only take one form.
-	pinned := config.PinnedValues(r.Unit, r.Credential)
+	expand := config.Replacer(config.PinnedValues(r.Unit, r.Credential))
 
 	segments := strings.Split(read, "/")
 	for i, seg := range segments {
-		seg = substitute(seg, pinned)
+		seg = expand.Replace(seg)
 		segments[i] = seg
 		if !hasPlaceholder(seg) {
 			continue
@@ -72,17 +72,6 @@ func policyPath(r config.Credential) (path string, widened bool) {
 		segments[i] = "+"
 	}
 	return strings.Join(segments, "/"), widened
-}
-
-// substitute replaces the placeholders whose value the rule already fixes.
-func substitute(seg string, pinned map[string]string) string {
-	pairs := make([]string, 0, 2*len(pinned))
-	for _, p := range config.Placeholders {
-		if v, ok := pinned[p]; ok {
-			pairs = append(pairs, p, v)
-		}
-	}
-	return strings.NewReplacer(pairs...).Replace(seg)
 }
 
 func hasPlaceholder(s string) bool {

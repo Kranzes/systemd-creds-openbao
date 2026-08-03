@@ -39,7 +39,10 @@ func (r *Resolver) Resolve(ctx context.Context, req credserver.Request) ([]byte,
 		return nil, "", fmt.Errorf("no credential rule matches unit %q credential %q", req.Unit, req.Credential)
 	}
 
-	secretPath := expand(rule.Path, req)
+	// One replacer serves every template of this request; see config.Replacer.
+	expand := config.Replacer(config.PlaceholderValues(req.Unit, req.Credential))
+
+	secretPath := expand.Replace(rule.Path)
 	if err := config.CheckSegments("expanded path", secretPath); err != nil {
 		return nil, "", err
 	}
@@ -52,7 +55,7 @@ func (r *Resolver) Resolve(ctx context.Context, req credserver.Request) ([]byte,
 	case config.BackendRaw:
 		data, err = r.reader.ReadRaw(ctx, secretPath)
 	default:
-		mount := expand(rule.Mount, req)
+		mount := expand.Replace(rule.Mount)
 		if err := config.CheckSegments("expanded mount", mount); err != nil {
 			return nil, "", err
 		}
@@ -71,7 +74,7 @@ func (r *Resolver) Resolve(ctx context.Context, req credserver.Request) ([]byte,
 		return out, location, nil
 	}
 
-	field := expand(rule.Field, req)
+	field := expand.Replace(rule.Field)
 	value, ok := data[field]
 	if !ok {
 		return nil, "", fmt.Errorf("secret %q has no field %q", location, field)
@@ -118,18 +121,4 @@ func encodeField(value any) ([]byte, error) {
 		}
 		return out, nil
 	}
-}
-
-// expand substitutes request placeholders in a rule template; see
-// config.PlaceholderValues for what each one becomes.
-func expand(template string, req credserver.Request) string {
-	values := config.PlaceholderValues(req.Unit, req.Credential)
-
-	// The policy generator wildcards segments by config.Placeholders, so
-	// driving substitution from the same list keeps the two in step.
-	pairs := make([]string, 0, 2*len(config.Placeholders))
-	for _, p := range config.Placeholders {
-		pairs = append(pairs, p, values[p])
-	}
-	return strings.NewReplacer(pairs...).Replace(template)
 }

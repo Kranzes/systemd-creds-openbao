@@ -312,6 +312,56 @@ func TestParseAllowsWildcardCharactersInsideASegment(t *testing.T) {
 	}
 }
 
+func TestReplacer(t *testing.T) {
+	expand := Replacer(PlaceholderValues("foo@bar.service", "cred"))
+	tests := []struct{ tmpl, want string }{
+		{"{unit}", "foo@bar.service"},
+		{"{unit_name}", "foo@bar"},
+		{"{prefix}", "foo"},
+		{"{instance}", "bar"},
+		{"{credential}", "cred"},
+		{"systemd/{prefix}/{credential}", "systemd/foo/cred"},
+	}
+	for _, tt := range tests {
+		if got := expand.Replace(tt.tmpl); got != tt.want {
+			t.Errorf("Replace(%q) = %q, want %q", tt.tmpl, got, tt.want)
+		}
+	}
+
+	plain := Replacer(PlaceholderValues("myapp.service", "c"))
+	if got := plain.Replace("{instance}"); got != "" {
+		t.Errorf("instance of non-templated unit = %q, want empty", got)
+	}
+	if got := plain.Replace("{prefix}"); got != "myapp" {
+		t.Errorf("prefix of non-templated unit = %q, want myapp", got)
+	}
+}
+
+// The policy generator wildcards a segment by matching Placeholders, so a
+// placeholder the request path substitutes but the list omits would be granted
+// as a literal segment. Both read the same list, leaving only this direction to
+// check.
+func TestReplacerSubstitutesEveryDocumentedPlaceholder(t *testing.T) {
+	expand := Replacer(PlaceholderValues("foo@bar.service", "cred"))
+	for _, p := range Placeholders {
+		if got := expand.Replace(p); got == p {
+			t.Errorf("Replace(%q) = %q, want a substituted value", p, got)
+		}
+	}
+	if got := expand.Replace("{unknown}"); got != "{unknown}" {
+		t.Errorf("Replace(%q) = %q, want it left alone", "{unknown}", got)
+	}
+}
+
+// A placeholder the values omit has to survive, since that is how package
+// policy tells a free segment to become a wildcard.
+func TestReplacerLeavesFreePlaceholdersAlone(t *testing.T) {
+	expand := Replacer(PinnedValues("foo@*.service", "cred"))
+	if got := expand.Replace("systemd/{instance}/{credential}"); got != "systemd/{instance}/cred" {
+		t.Errorf("Replace = %q, want the free placeholder left in place", got)
+	}
+}
+
 func TestPinnedValues(t *testing.T) {
 	// A glob with no metacharacters matches one string, so everything it feeds
 	// is known ahead of any request.
