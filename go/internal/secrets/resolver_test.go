@@ -14,20 +14,16 @@ import (
 )
 
 type fakeReader struct {
-	kv  map[string]map[string]any // "mount/path" → data
-	raw map[string]map[string]any // "path" → data
+	kv  map[string]map[string]any // "mount/path" -> data
+	raw map[string]map[string]any // "path" -> data
 }
 
-func (f *fakeReader) ReadKV(_ context.Context, mount, path string) (map[string]any, error) {
-	data, ok := f.kv[mount+"/"+path]
-	if !ok {
-		return nil, errNotFound
+func (f *fakeReader) Read(_ context.Context, ref config.SecretRef) (map[string]any, error) {
+	from := f.kv
+	if ref.Raw {
+		from = f.raw
 	}
-	return data, nil
-}
-
-func (f *fakeReader) ReadRaw(_ context.Context, path string) (map[string]any, error) {
-	data, ok := f.raw[path]
+	data, ok := from[ref.Location()]
 	if !ok {
 		return nil, errNotFound
 	}

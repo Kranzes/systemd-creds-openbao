@@ -73,16 +73,14 @@ var fuzzSecretData = map[string]any{
 	"count":       float64(3),
 }
 
-func (c *checkingReader) ReadKV(_ context.Context, mount, path string) (map[string]any, error) {
-	c.cleanSegments(mount)
-	c.cleanSegments(path)
-	c.granted(mount + "/data/" + path)
-	return fuzzSecretData, nil
-}
-
-func (c *checkingReader) ReadRaw(_ context.Context, path string) (map[string]any, error) {
-	c.cleanSegments(path)
-	c.granted(path)
+func (c *checkingReader) Read(_ context.Context, ref config.SecretRef) (map[string]any, error) {
+	c.cleanSegments(ref.Path)
+	if ref.Raw {
+		c.granted(ref.Path)
+		return fuzzSecretData, nil
+	}
+	c.cleanSegments(ref.Mount)
+	c.granted(ref.Mount + "/data/" + ref.Path)
 	return fuzzSecretData, nil
 }
 

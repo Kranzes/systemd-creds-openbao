@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/openbao/openbao/api/v2"
+
+	"github.com/kranzes/systemd-creds-openbao/go/internal/config"
 )
 
 // flakyReader serves fixed data until failWith is set.
@@ -18,15 +20,7 @@ type flakyReader struct {
 	calls    int
 }
 
-func (f *flakyReader) ReadKV(_ context.Context, _, _ string) (map[string]any, error) {
-	f.calls++
-	if f.failWith != nil {
-		return nil, f.failWith
-	}
-	return f.data, nil
-}
-
-func (f *flakyReader) ReadRaw(_ context.Context, _ string) (map[string]any, error) {
+func (f *flakyReader) Read(_ context.Context, _ config.SecretRef) (map[string]any, error) {
 	f.calls++
 	if f.failWith != nil {
 		return nil, f.failWith
@@ -47,7 +41,7 @@ func testStaleCache(inner reader, maxAge time.Duration) (*StaleCache, *time.Time
 
 func readKV(t *testing.T, c *StaleCache) (map[string]any, error) {
 	t.Helper()
-	return c.ReadKV(context.Background(), "kv", "myapp/db")
+	return c.Read(context.Background(), config.SecretRef{Mount: "kv", Path: "myapp/db"})
 }
 
 func TestStaleCacheReadsFreshWhileHealthy(t *testing.T) {
@@ -178,13 +172,14 @@ func TestStaleCacheKeysRawAndKVSeparately(t *testing.T) {
 	inner := &flakyReader{data: map[string]any{"password": "hunter2"}}
 	c, _ := testStaleCache(inner, time.Hour)
 
-	if _, err := c.ReadRaw(context.Background(), "kv/myapp/db"); err != nil {
+	raw := config.SecretRef{Raw: true, Path: "kv/myapp/db"}
+	if _, err := c.Read(context.Background(), raw); err != nil {
 		t.Fatal(err)
 	}
 	inner.failWith = errDown
 	// The KV read resolves to the same location string, but the remembered
 	// raw response must not satisfy it.
-	if _, err := c.ReadKV(context.Background(), "kv", "myapp/db"); !errors.Is(err, errDown) {
+	if _, err := readKV(t, c); !errors.Is(err, errDown) {
 		t.Fatalf("expected the read error, got %v", err)
 	}
 }

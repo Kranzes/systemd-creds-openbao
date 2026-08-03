@@ -247,10 +247,15 @@ func testClient(t *testing.T) *Client {
 	return client
 }
 
+// kvRef names a secret on the "secret" mount the fake OpenBao serves.
+func kvRef(path string) config.SecretRef {
+	return config.SecretRef{Mount: "secret", Path: path}
+}
+
 func TestReadKV(t *testing.T) {
 	client := testClient(t)
 
-	data, err := client.ReadKV(context.Background(), "secret", "myapp/db")
+	data, err := client.Read(context.Background(), kvRef("myapp/db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -262,7 +267,7 @@ func TestReadKV(t *testing.T) {
 func TestReadRaw(t *testing.T) {
 	client := testClient(t)
 
-	data, err := client.ReadRaw(context.Background(), "database/creds/myapp")
+	data, err := client.Read(context.Background(), config.SecretRef{Raw: true, Path: "database/creds/myapp"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -297,7 +302,7 @@ func TestReadRejectsOversizedResponse(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err = c.ReadKV(ctx, "secret", "big")
+	_, err = c.Read(ctx, kvRef("big"))
 	if err == nil {
 		t.Fatal("ReadKV succeeded, want the response refused for its size")
 	}
@@ -309,7 +314,7 @@ func TestReadRejectsOversizedResponse(t *testing.T) {
 func TestReadKVNotFound(t *testing.T) {
 	client := testClient(t)
 
-	if _, err := client.ReadKV(context.Background(), "secret", "does/not/exist"); err == nil {
+	if _, err := client.Read(context.Background(), kvRef("does/not/exist")); err == nil {
 		t.Error("ReadKV succeeded for a missing secret, want error")
 	}
 }
@@ -317,7 +322,7 @@ func TestReadKVNotFound(t *testing.T) {
 func TestReadKVDeletedVersion(t *testing.T) {
 	client := testClient(t)
 
-	_, err := client.ReadKV(context.Background(), "secret", "myapp/deleted")
+	_, err := client.Read(context.Background(), kvRef("myapp/deleted"))
 	if err == nil || !strings.Contains(err.Error(), "deleted") {
 		t.Errorf("err = %v, want deleted-version error", err)
 	}
@@ -340,7 +345,7 @@ func TestTokenFromFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := client.ReadKV(context.Background(), "secret", "myapp/db"); err != nil {
+	if _, err := client.Read(context.Background(), kvRef("myapp/db")); err != nil {
 		t.Errorf("read with file token failed: %v", err)
 	}
 }
@@ -363,7 +368,7 @@ func TestTokenFileEnvExpansion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := client.ReadKV(context.Background(), "secret", "myapp/db"); err != nil {
+	if _, err := client.Read(context.Background(), kvRef("myapp/db")); err != nil {
 		t.Errorf("read with expanded token file failed: %v", err)
 	}
 }

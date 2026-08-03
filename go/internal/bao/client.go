@@ -53,9 +53,20 @@ func New(ctx context.Context, cfg config.OpenBao, log *slog.Logger) (*Client, er
 	return c, nil
 }
 
-// ReadKV implements secrets.Reader.
-func (c *Client) ReadKV(ctx context.Context, mount, secretPath string) (map[string]any, error) {
-	secret, err := c.api.KVv2(mount).Get(ctx, secretPath)
+// Read implements secrets.Reader.
+func (c *Client) Read(ctx context.Context, ref config.SecretRef) (map[string]any, error) {
+	if ref.Raw {
+		secret, err := c.api.Logical().ReadWithContext(ctx, ref.Path)
+		if err != nil {
+			return nil, err
+		}
+		if secret == nil || secret.Data == nil {
+			return nil, api.ErrSecretNotFound
+		}
+		return secret.Data, nil
+	}
+
+	secret, err := c.api.KVv2(ref.Mount).Get(ctx, ref.Path)
 	if err != nil {
 		return nil, err
 	}
@@ -63,18 +74,6 @@ func (c *Client) ReadKV(ctx context.Context, mount, secretPath string) (map[stri
 		// A soft-deleted or destroyed version has an empty payload;
 		// serving it would hand the unit a literal "null".
 		return nil, errors.New("secret version is deleted or has no data")
-	}
-	return secret.Data, nil
-}
-
-// ReadRaw implements secrets.Reader.
-func (c *Client) ReadRaw(ctx context.Context, apiPath string) (map[string]any, error) {
-	secret, err := c.api.Logical().ReadWithContext(ctx, apiPath)
-	if err != nil {
-		return nil, err
-	}
-	if secret == nil || secret.Data == nil {
-		return nil, api.ErrSecretNotFound
 	}
 	return secret.Data, nil
 }

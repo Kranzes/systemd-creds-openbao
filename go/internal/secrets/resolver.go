@@ -16,8 +16,7 @@ import (
 
 // Reader reads secret data from OpenBao. It is implemented by *bao.Client.
 type Reader interface {
-	ReadKV(ctx context.Context, mount, secretPath string) (map[string]any, error)
-	ReadRaw(ctx context.Context, apiPath string) (map[string]any, error)
+	Read(ctx context.Context, ref config.SecretRef) (map[string]any, error)
 }
 
 // Resolver resolves credential requests against a rule list, first match wins.
@@ -42,26 +41,19 @@ func (r *Resolver) Resolve(ctx context.Context, req credserver.Request) ([]byte,
 	// One replacer serves every template of this request; see config.Replacer.
 	expand := config.Replacer(config.PlaceholderValues(req.Unit, req.Credential))
 
-	secretPath := expand.Replace(rule.Path)
-	if err := config.CheckSegments("expanded path", secretPath); err != nil {
+	ref := config.SecretRef{Raw: rule.Backend == config.BackendRaw, Path: expand.Replace(rule.Path)}
+	if err := config.CheckSegments("expanded path", ref.Path); err != nil {
 		return nil, "", err
 	}
-	var (
-		data map[string]any
-		err  error
-	)
-	location := secretPath
-	switch rule.Backend {
-	case config.BackendRaw:
-		data, err = r.reader.ReadRaw(ctx, secretPath)
-	default:
-		mount := expand.Replace(rule.Mount)
-		if err := config.CheckSegments("expanded mount", mount); err != nil {
+	if !ref.Raw {
+		ref.Mount = expand.Replace(rule.Mount)
+		if err := config.CheckSegments("expanded mount", ref.Mount); err != nil {
 			return nil, "", err
 		}
-		location = mount + "/" + secretPath
-		data, err = r.reader.ReadKV(ctx, mount, secretPath)
 	}
+	location := ref.Location()
+
+	data, err := r.reader.Read(ctx, ref)
 	if err != nil {
 		return nil, "", fmt.Errorf("reading %q: %w", location, err)
 	}

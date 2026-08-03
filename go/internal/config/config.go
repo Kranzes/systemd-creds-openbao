@@ -196,6 +196,26 @@ type Credential struct {
 	Field string `toml:"field"`
 }
 
+// SecretRef names one secret to read. Package secrets builds it from a rule and
+// a request, package bao reads it; carrying the backend with the path is what
+// keeps the two from switching on it separately.
+type SecretRef struct {
+	// Raw reads Path as a full API path instead of a KV v2 secret under Mount.
+	Raw bool
+	// Mount is the KV mount point, empty when Raw.
+	Mount string
+	// Path is the secret path below Mount, or the API path when Raw.
+	Path string
+}
+
+// Location names the secret the way the journal's SECRET_PATH field does.
+func (r SecretRef) Location() string {
+	if r.Raw {
+		return r.Path
+	}
+	return r.Mount + "/" + r.Path
+}
+
 // checkDuration rejects a duration a bare TOML integer produced: it decodes as
 // nanoseconds, so connection_timeout = 15 would silently mean 15ns. Zero is the
 // caller's to interpret, since applyDefaults has already run.

@@ -5,12 +5,13 @@ import (
 	"log/slog"
 	"sync"
 	"time"
+
+	"github.com/kranzes/systemd-creds-openbao/go/internal/config"
 )
 
 // reader is the part of *Client that StaleCache decorates.
 type reader interface {
-	ReadKV(ctx context.Context, mount, secretPath string) (map[string]any, error)
-	ReadRaw(ctx context.Context, apiPath string) (map[string]any, error)
+	Read(ctx context.Context, ref config.SecretRef) (map[string]any, error)
 }
 
 // StaleCache decorates Client with a fallback for OpenBao outages: it
@@ -27,12 +28,7 @@ type StaleCache struct {
 	mu      sync.Mutex
 	inner   reader
 	maxAge  time.Duration
-	entries map[readKey]entry
-}
-
-type readKey struct {
-	raw         bool
-	mount, path string
+	entries map[config.SecretRef]entry
 }
 
 type entry struct {
@@ -48,7 +44,7 @@ func NewStaleCache(inner reader, maxAge time.Duration, log *slog.Logger) *StaleC
 		now:     time.Now,
 		inner:   inner,
 		maxAge:  maxAge,
-		entries: map[readKey]entry{},
+		entries: map[config.SecretRef]entry{},
 	}
 }
 
@@ -65,31 +61,14 @@ func (s *StaleCache) Swap(inner reader, maxAge time.Duration) {
 	}
 }
 
-// ReadKV implements secrets.Reader.
-func (s *StaleCache) ReadKV(ctx context.Context, mount, secretPath string) (map[string]any, error) {
-	return s.read(ctx, readKey{mount: mount, path: secretPath}, mount+"/"+secretPath)
-}
-
-// ReadRaw implements secrets.Reader.
-func (s *StaleCache) ReadRaw(ctx context.Context, apiPath string) (map[string]any, error) {
-	return s.read(ctx, readKey{raw: true, path: apiPath}, apiPath)
-}
-
-// read does the fresh read and falls back to the remembered response only
-// when the read fails with a transient error. location names the secret the
-// way the journal's SECRET_PATH field does.
-func (s *StaleCache) read(ctx context.Context, key readKey, location string) (map[string]any, error) {
+// Read implements secrets.Reader. It does the fresh read and falls back to the
+// remembered response only when that fails with a transient error.
+func (s *StaleCache) Read(ctx context.Context, key config.SecretRef) (map[string]any, error) {
 	s.mu.Lock()
 	inner := s.inner
 	s.mu.Unlock()
 
-	var data map[string]any
-	var err error
-	if key.raw {
-		data, err = inner.ReadRaw(ctx, key.path)
-	} else {
-		data, err = inner.ReadKV(ctx, key.mount, key.path)
-	}
+	data, err := inner.Read(ctx, key)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -111,7 +90,7 @@ func (s *StaleCache) read(ctx context.Context, key readKey, location string) (ma
 		return nil, err
 	}
 	if age := s.now().Sub(e.at); age <= s.maxAge {
-		s.log.Warn("read failed, serving stale secret data", "SECRET_PATH", location, "AGE", age, "ERROR", err)
+		s.log.Warn("read failed, serving stale secret data", "SECRET_PATH", key.Location(), "AGE", age, "ERROR", err)
 		return e.data, nil
 	}
 	// Past the bound the entry can never be served again, so it must not
