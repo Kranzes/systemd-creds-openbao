@@ -146,16 +146,15 @@ func (s *Server) handle(conn net.Conn) {
 		return
 	}
 	log := s.log.With("UNIT", req.Unit, "CREDENTIAL", req.Credential)
-	ref := fmt.Sprintf("%q for %q", req.Credential, req.Unit)
 
 	data, secretPath, err := cur.resolver.Resolve(ctx, req)
 	if err != nil {
-		log.Error(fmt.Sprintf("refusing credential %s: %v", ref, err), "ERROR", err)
+		log.Error(fmt.Sprintf("refusing credential %s: %v", req.ref(), err), "ERROR", err)
 		return
 	}
 	log = log.With("SECRET_PATH", secretPath)
 	if len(data) > CredentialSizeMax {
-		log.Error("refusing credential "+ref+": payload exceeds systemd's credential size limit",
+		log.Error("refusing credential "+req.ref()+": payload exceeds systemd's credential size limit",
 			"SIZE", len(data), "LIMIT", CredentialSizeMax)
 		return
 	}
@@ -165,12 +164,12 @@ func (s *Server) handle(conn net.Conn) {
 	// already queued, which it reads as a complete credential.
 	if cur.connTimeout > 0 {
 		if err := conn.SetWriteDeadline(time.Now().Add(cur.connTimeout)); err != nil {
-			log.Error(fmt.Sprintf("failed to set write deadline serving %s: %v", ref, err), "ERROR", err)
+			log.Error(fmt.Sprintf("failed to set write deadline serving %s: %v", req.ref(), err), "ERROR", err)
 			return
 		}
 	}
 	if n, err := conn.Write(data); err != nil {
-		log.Error(fmt.Sprintf("failed to write credential %s: %v", ref, err), "ERROR", err, "WRITTEN", n, "SIZE", len(data))
+		log.Error(fmt.Sprintf("failed to write credential %s: %v", req.ref(), err), "ERROR", err, "WRITTEN", n, "SIZE", len(data))
 		return
 	}
 	// Half-close so the requester sees EOF promptly.

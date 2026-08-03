@@ -20,6 +20,12 @@ type Request struct {
 	Credential string
 }
 
+// ref names the request the way the log messages do. Only the paths that log
+// build it, since most connections are served without ever formatting it.
+func (r Request) ref() string {
+	return fmt.Sprintf("%q for %q", r.Credential, r.Unit)
+}
+
 // ParsePeer extracts the requesting unit and credential ID from the peer
 // address of an accepted connection. It fails unless the peer is bound to an
 // abstract-namespace address in systemd's format, which also rejects ordinary
