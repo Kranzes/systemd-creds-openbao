@@ -91,20 +91,12 @@ path = "systemd/site-{instance}/{credential}"
 unit = "*.service"
 credential = "db"
 path = "systemd/{unit_name}/{credential}"
-
-# A non-templated unit expands {instance} to nothing, which is not a path a
-# rule can read, so the wildcard stays.
-[[credentials]]
-unit = "plain.service"
-credential = "db"
-path = "sites/{instance}/db"
 `)
 
 	want := []string{
 		"kv/data/certs/nginx/tls-key",
 		"kv/data/systemd/site-prod/config",
 		"kv/data/systemd/+/db",
-		"kv/data/sites/+/db",
 	}
 	if p := paths(got); !slices.Equal(p, want) {
 		t.Errorf("granted paths = %q, want %q", p, want)

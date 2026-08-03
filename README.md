@@ -150,14 +150,21 @@ whole convention. For unit `foo@bar.service` requesting credential `credx`:
 | `{credential}` | `credx` |
 
 Placeholder values come from the requester, so the expanded path and mount are
-rechecked and an empty, `.` or `..` segment refuses the request. A rule whose
-segment is exactly `{instance}` therefore never serves a non-templated unit.
+rechecked and an empty, `.` or `..` segment refuses the request.
 
 Unlike `unit` and `credential`, `path` and `mount` are not globs: they are read
 verbatim. Because they are also what the generated policy grants, a literal `+`
 segment or a trailing `*` in either is rejected at load, since OpenBao's policy
 syntax reads both as wildcards and the rule would grant a subtree it can never
 serve from.
+
+A `unit` or `credential` glob carrying no wildcard of its own fixes what its
+placeholders expand to, so that rendering is known at load and is exactly what
+the policy grants. It has to clear the same two checks, which rejects a rule
+pinning a segment to `+` and a rule pinning one to nothing. The second is why
+`unit = "plain.service"` with `path = "sites/{instance}/db"` is refused: a
+non-templated unit has no instance, so the rule could never read anything, while
+the policy would still grant the whole `sites/+/db` subtree.
 
 A convention where every unit reads fields of `kv/systemd/<unit name>` is one
 rule:

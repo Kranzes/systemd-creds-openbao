@@ -284,6 +284,46 @@ func TestParseErrors(t *testing.T) {
 			toml: "[[credentials]]\nunit = \"u.service\"\nmount = \"kv*\"\npath = \"db\"",
 			want: "wildcard",
 		},
+		{
+			// A glob carrying no metacharacter is pinned into the policy in
+			// place of a wildcard, so a "+" it fixes reaches the policy as a
+			// segment wildcard the path itself never showed.
+			name: "credential glob pinning a wildcard segment",
+			toml: "[[credentials]]\nunit = \"u.service\"\ncredential = \"+\"\npath = \"apps/{credential}\"",
+			want: "wildcard",
+		},
+		{
+			// The unit glob pins the derived placeholders too, not just {unit}.
+			name: "unit glob pinning a wildcard segment",
+			toml: "[[credentials]]\nunit = \"+.service\"\npath = \"apps/{unit_name}\"",
+			want: "wildcard",
+		},
+		{
+			name: "credential glob pinning a wildcard mount",
+			toml: "[[credentials]]\nunit = \"u.service\"\ncredential = \"+\"\nmount = \"kv/{credential}\"\npath = \"db\"",
+			want: "wildcard",
+		},
+		{
+			// A non-templated unit pins {instance} to nothing, so the rule
+			// expands to an empty segment and can never read anything. Left
+			// standing, package policy would grant the segment as a full "+"
+			// wildcard for a rule that serves nothing.
+			name: "literal unit glob pinning an empty instance",
+			toml: "[[credentials]]\nunit = \"plain.service\"\npath = \"sites/{instance}/db\"",
+			want: "empty",
+		},
+		{
+			// Same hole reached through a template unit whose instance the
+			// glob fixes to nothing.
+			name: "template unit glob pinning an empty instance",
+			toml: "[[credentials]]\nunit = \"foo@.service\"\npath = \"systemd/{instance}\"",
+			want: "empty",
+		},
+		{
+			name: "literal unit glob pinning a parent segment",
+			toml: "[[credentials]]\nunit = \"..service\"\npath = \"apps/{prefix}/db\"",
+			want: "segment",
+		},
 	}
 
 	for _, tt := range tests {
@@ -309,6 +349,26 @@ func TestParseAllowsWildcardCharactersInsideASegment(t *testing.T) {
 	}
 	if got := cfg.Credentials[0].Path; got != path {
 		t.Errorf("path = %q, want %q", got, path)
+	}
+}
+
+func TestParseAllowsAPinnedWildcardThePolicyNeverSees(t *testing.T) {
+	// The globs pin "{credential}", but no policy path stands for it, so the
+	// "+" stays a credential ID the rule matches and never reaches the policy.
+	cfg, err := Parse([]byte("[[credentials]]\nunit = \"u.service\"\ncredential = \"+\"\npath = \"apps/db\""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.Credentials[0].Credential; got != "+" {
+		t.Errorf("credential = %q, want %q", got, "+")
+	}
+}
+
+func TestParseAllowsAFreePlaceholderTheGlobsLeaveWild(t *testing.T) {
+	// "+*" carries a metacharacter, so nothing is pinned and the policy spends
+	// the wildcard the placeholder already asks for rather than the glob's "+".
+	if _, err := Parse([]byte("[[credentials]]\nunit = \"u.service\"\ncredential = \"+*\"\npath = \"apps/{credential}\"")); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -391,9 +451,11 @@ func TestPinnedValues(t *testing.T) {
 		t.Errorf("PinnedValues[{credential}] = %q, want %q", got, "tls-key")
 	}
 
-	// A non-templated unit has no instance, and an empty segment is not a path
-	// any rule can read, so there is nothing to pin it to.
-	if v, ok := PinnedValues("plain.service", "*")["{instance}"]; ok {
-		t.Errorf("PinnedValues[{instance}] = %q, want it left free", v)
+	// A non-templated unit has no instance, and the glob determines that as
+	// surely as any other value. Pinning it to the empty string is what lets
+	// validation see that a rule using {instance} here can never read anything,
+	// instead of package policy granting the segment as a wildcard.
+	if v, ok := PinnedValues("plain.service", "*")["{instance}"]; !ok || v != "" {
+		t.Errorf("PinnedValues[{instance}] = %q, %v, want %q, true", v, ok, "")
 	}
 }

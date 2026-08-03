@@ -4,6 +4,7 @@ package config
 
 import (
 	"fmt"
+	"maps"
 	"path"
 	"slices"
 	"strings"
@@ -131,20 +132,19 @@ func PlaceholderValues(unit, credential string) map[string]string {
 // A glob carrying none of path.Match's metacharacters matches exactly one
 // string, so every placeholder fed from it expands to a constant that package
 // policy can write into the generated policy in place of a wildcard.
-// Placeholders the globs leave free are absent from the result, as are those
-// expanding to nothing, which CheckSegments refuses at request time anyway.
+// Placeholders the globs leave free are absent from the result. A pinned value
+// may be empty, which means the rule expands to a path with an empty segment
+// and can never serve; Credential.validate rejects that rather than letting
+// package policy spend a wildcard on it.
 func PinnedValues(unitGlob, credentialGlob string) map[string]string {
 	unitFixed, credentialFixed := isLiteralGlob(unitGlob), isLiteralGlob(credentialGlob)
-	pinned := map[string]string{}
-	for p, v := range PlaceholderValues(unitGlob, credentialGlob) {
-		fixed := unitFixed
+	pinned := PlaceholderValues(unitGlob, credentialGlob)
+	maps.DeleteFunc(pinned, func(p, _ string) bool {
 		if p == "{credential}" {
-			fixed = credentialFixed
+			return !credentialFixed
 		}
-		if fixed && v != "" {
-			pinned[p] = v
-		}
-	}
+		return !unitFixed
+	})
 	return pinned
 }
 
@@ -210,13 +210,26 @@ func CheckSegments(what, p string) error {
 	return nil
 }
 
-// CheckPolicyWildcards rejects a literal path carrying one of the wildcards
-// OpenBao's policy syntax recognizes: "+" matches any one segment, and a
-// trailing "*" matches any suffix. Package policy writes a rule's path into the
-// generated policy, while package secrets requests it verbatim, so a rule
-// carrying either grants a subtree it can never read a secret from. Unit and
-// credential globs are unaffected; only the path is shared with the policy.
-func CheckPolicyWildcards(what, p string) error {
+// checkLiteral applies both checks a rule's literal path and mount must pass:
+// package secrets requests the text verbatim, and package policy writes it into
+// the generated policy.
+func checkLiteral(what, p string) error {
+	if err := CheckSegments(what, p); err != nil {
+		return err
+	}
+	return checkPolicyWildcards(what, p)
+}
+
+// checkPolicyWildcards rejects text carrying one of the wildcards OpenBao's
+// policy syntax recognizes: "+" matches any one segment, and a trailing "*"
+// matches any suffix. Package policy writes a rule's path into the generated
+// policy, while package secrets requests it verbatim, so a rule carrying either
+// grants a subtree it can never read a secret from. The unit and credential
+// globs reach the policy the same way, through the values PinnedValues fixes,
+// which is why Credential.validate runs this over the pinned rendering as well
+// as the literal text: "+" is none of path.Match's metacharacters, so nothing
+// else would stop a glob from pinning a segment to one.
+func checkPolicyWildcards(what, p string) error {
 	var found string
 	switch {
 	case strings.HasSuffix(p, "*"):
@@ -347,10 +360,7 @@ func (r *Credential) validate() error {
 
 	switch r.Backend {
 	case BackendKV:
-		if err := CheckSegments("mount", r.Mount); err != nil {
-			return err
-		}
-		if err := CheckPolicyWildcards("mount", r.Mount); err != nil {
+		if err := checkLiteral("mount", r.Mount); err != nil {
 			return err
 		}
 	case BackendRaw:
@@ -364,11 +374,24 @@ func (r *Credential) validate() error {
 	if r.Path == "" {
 		return fmt.Errorf("path is required")
 	}
-	if err := CheckSegments("path", r.Path); err != nil {
+	if err := checkLiteral("path", r.Path); err != nil {
 		return err
 	}
-	if err := CheckPolicyWildcards("path", r.Path); err != nil {
+
+	// What the globs pin is known now, and package policy writes exactly that
+	// text into the generated policy while a request expands to exactly it, so
+	// the pinned rendering has to clear the same checks as a literal path. This
+	// is what catches a rule that pins a segment to "+" (a policy wildcard the
+	// path never showed) or to nothing (a path no request can read, which
+	// package policy would otherwise grant as a whole wildcard segment).
+	expand := Replacer(PinnedValues(r.Unit, r.Credential))
+	if err := checkLiteral("path with the values its globs pin", expand.Replace(r.Path)); err != nil {
 		return err
+	}
+	if r.Backend == BackendKV {
+		if err := checkLiteral("mount with the values its globs pin", expand.Replace(r.Mount)); err != nil {
+			return err
+		}
 	}
 
 	switch r.Format {
