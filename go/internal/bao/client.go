@@ -157,18 +157,35 @@ func retryable(err error) bool {
 	return errors.As(err, &urlErr)
 }
 
+// login authenticates with the configured method. Each method only builds the
+// request body; issuing it and adopting the token is the same either way, and
+// the credential files are read here rather than at construction so a rotated
+// one is picked up at re-authentication.
 func (c *Client) login(ctx context.Context) (*api.Secret, error) {
+	var (
+		data map[string]any
+		err  error
+	)
 	switch c.auth.Method {
 	case config.AuthCert:
-		return c.loginCert(ctx)
+		data, err = c.certLogin()
 	case config.AuthJWT:
-		return c.loginJWT(ctx)
+		data, err = c.jwtLogin()
 	default:
-		return c.loginAppRole(ctx)
+		data, err = c.appRoleLogin()
 	}
+	if err != nil {
+		return nil, err
+	}
+
+	secret, err := c.api.Logical().WriteWithContext(ctx, c.loginPath(), data)
+	if err != nil {
+		return nil, err
+	}
+	return c.setLoginToken(secret)
 }
 
-func (c *Client) loginAppRole(ctx context.Context) (*api.Secret, error) {
+func (c *Client) appRoleLogin() (map[string]any, error) {
 	roleID, err := valueOrFile(c.auth.RoleID, c.auth.RoleIDFile, "role_id_file")
 	if err != nil {
 		return nil, err
@@ -177,21 +194,13 @@ func (c *Client) loginAppRole(ctx context.Context) (*api.Secret, error) {
 	if err != nil {
 		return nil, err
 	}
-
-	secret, err := c.api.Logical().WriteWithContext(ctx, c.loginPath(), map[string]any{
-		"role_id":   roleID,
-		"secret_id": secretID,
-	})
-	if err != nil {
-		return nil, err
-	}
-	return c.setLoginToken(secret)
+	return map[string]any{"role_id": roleID, "secret_id": secretID}, nil
 }
 
-// loginCert authenticates with the TLS client certificate the connection
+// certLogin authenticates with the TLS client certificate the connection
 // already presents. The client library reads it when the client is built, so a
 // reload picks up a rotated one.
-func (c *Client) loginCert(ctx context.Context) (*api.Secret, error) {
+func (c *Client) certLogin() (map[string]any, error) {
 	if api.ReadBaoVariable(api.EnvVaultClientCert) == "" &&
 		api.ReadBaoVariable(api.EnvVaultClientCertBytes) == "" {
 		return nil, errors.New("cert auth requires a TLS client certificate: set BAO_CLIENT_CERT and BAO_CLIENT_KEY")
@@ -200,17 +209,11 @@ func (c *Client) loginCert(ctx context.Context) (*api.Secret, error) {
 	if c.auth.CertRole != "" {
 		data["name"] = c.auth.CertRole
 	}
-	secret, err := c.api.Logical().WriteWithContext(ctx, c.loginPath(), data)
-	if err != nil {
-		return nil, err
-	}
-	return c.setLoginToken(secret)
+	return data, nil
 }
 
-// loginJWT authenticates with the JWT read from jwt_file. The file is re-read
-// on every attempt, so a token rotated on disk is picked up at
-// re-authentication.
-func (c *Client) loginJWT(ctx context.Context) (*api.Secret, error) {
+// jwtLogin authenticates with the JWT read from jwt_file.
+func (c *Client) jwtLogin() (map[string]any, error) {
 	jwt, err := valueOrFile("", c.auth.JWTFile, "jwt_file")
 	if err != nil {
 		return nil, err
@@ -219,11 +222,7 @@ func (c *Client) loginJWT(ctx context.Context) (*api.Secret, error) {
 	if c.auth.JWTRole != "" {
 		data["role"] = c.auth.JWTRole
 	}
-	secret, err := c.api.Logical().WriteWithContext(ctx, c.loginPath(), data)
-	if err != nil {
-		return nil, err
-	}
-	return c.setLoginToken(secret)
+	return data, nil
 }
 
 func (c *Client) loginPath() string {
