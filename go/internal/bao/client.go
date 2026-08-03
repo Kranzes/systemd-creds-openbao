@@ -122,22 +122,26 @@ func (c *Client) loginWithRetry(ctx context.Context, failFast bool) (*api.Secret
 	})
 }
 
+// Retries and renewal failures share one backoff schedule.
+const (
+	backoffStart = time.Second
+	backoffMax   = time.Minute
+)
+
 // withRetry calls do until it succeeds or ctx is canceled, backing off between
 // attempts; with failFast a definitive rejection ends the loop instead.
 func (c *Client) withRetry(ctx context.Context, what string, failFast bool, do func() (*api.Secret, error)) (*api.Secret, error) {
-	backoff := time.Second
+	backoff := backoffStart
 	for {
 		secret, err := do()
 		if err == nil || (failFast && !retryable(err)) {
 			return secret, err
 		}
 		c.log.Warn(what+" failed, retrying", "ERROR", err, "RETRY_IN", backoff)
-		select {
-		case <-ctx.Done():
+		if !sleep(ctx, backoff) {
 			return nil, ctx.Err()
-		case <-time.After(backoff):
 		}
-		backoff = min(backoff*2, time.Minute)
+		backoff = min(backoff*2, backoffMax)
 	}
 }
 
@@ -268,7 +272,7 @@ func (c *Client) renewStaticToken(ctx context.Context) {
 // manageTokenLifecycle renews the login token for as long as OpenBao permits
 // and, with canRelogin, re-authenticates once renewal is exhausted.
 func (c *Client) manageTokenLifecycle(ctx context.Context, secret *api.Secret, canRelogin bool) {
-	backoff := time.Second
+	backoff := backoffStart
 	for {
 		ttl, err := secret.TokenTTL()
 		if err != nil || ttl <= 0 {
@@ -296,14 +300,14 @@ func (c *Client) manageTokenLifecycle(ctx context.Context, secret *api.Secret, c
 			if !sleep(ctx, backoff) {
 				return
 			}
-			backoff = min(backoff*2, time.Minute)
-			if !canRelogin && retryable(renewErr) {
-				continue
-			}
+			backoff = min(backoff*2, backoffMax)
 		} else {
-			backoff = time.Second
+			backoff = backoffStart
 		}
 		if !canRelogin {
+			if renewErr != nil && retryable(renewErr) {
+				continue
+			}
 			c.log.Error("OpenBao token is about to expire and cannot be re-acquired; provide a fresh token and restart")
 			return
 		}
