@@ -92,19 +92,20 @@ func run() int {
 	signal.Notify(reload, syscall.SIGHUP)
 	defer signal.Stop(reload)
 
+	// Adopting the sockets first keeps a misconfigured socket unit a prompt
+	// error, since logging in retries a transient failure indefinitely.
+	listeners, err := listen()
+	if err != nil {
+		log.Error("failed to listen", "ERROR", err)
+		return 1
+	}
+
 	// The client's context governs its token renewal; a reload cancels it.
 	clientCtx, stopClient := context.WithCancel(ctx)
 	client, err := bao.New(clientCtx, cfg.OpenBao, log)
 	if err != nil {
 		stopClient()
 		log.Error("failed to set up OpenBao client", "ERROR", err)
-		return 1
-	}
-
-	listeners, err := listen()
-	if err != nil {
-		stopClient()
-		log.Error("failed to listen", "ERROR", err)
 		return 1
 	}
 
