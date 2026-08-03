@@ -196,6 +196,19 @@ type Credential struct {
 	Field string `toml:"field"`
 }
 
+// checkDuration rejects a duration a bare TOML integer produced: it decodes as
+// nanoseconds, so connection_timeout = 15 would silently mean 15ns. Zero is the
+// caller's to interpret, since applyDefaults has already run.
+func checkDuration(what string, d time.Duration, example string) error {
+	if d < 0 {
+		return fmt.Errorf("%s must not be negative", what)
+	}
+	if d != 0 && d < time.Millisecond {
+		return fmt.Errorf("%s %v is too short to be meant; write it as a duration string like %q", what, d, example)
+	}
+	return nil
+}
+
 // CheckSegments rejects an API path with an empty, ".", or ".." segment, which
 // could make URL normalization on the server resolve the read to a secret the
 // rule never granted. Package secrets applies it after placeholder expansion,
@@ -260,6 +273,10 @@ func Parse(data []byte) (*Config, error) {
 	return &cfg, nil
 }
 
+// applyDefaults fills in what the file left out. The rule defaults are guarded
+// by the option they belong to, which is what lets validate still tell an unset
+// field from a defaulted one and reject "mount with backend = raw" or "field
+// with format = json".
 func (c *Config) applyDefaults() {
 	if c.OpenBao.Auth.Method == "" {
 		c.OpenBao.Auth.Method = AuthToken
@@ -326,17 +343,11 @@ func (c *Config) validate() error {
 		return fmt.Errorf("openbao.auth: jwt_file is required for jwt (the token is confidential and has no inline key)")
 	}
 
-	// A bare TOML integer decodes as nanoseconds, so connection_timeout = 15
-	// would silently mean 15ns. Nothing that short is a real timeout.
-	if d := c.Server.ConnectionTimeout; d < 0 {
-		return fmt.Errorf("server: connection_timeout must not be negative")
-	} else if d < time.Millisecond {
-		return fmt.Errorf("server: connection_timeout %v is too short to be meant; write it as a duration string like \"15s\"", d)
+	if err := checkDuration("server: connection_timeout", c.Server.ConnectionTimeout, "15s"); err != nil {
+		return err
 	}
-	if d := c.OpenBao.ServeStaleFor; d < 0 {
-		return fmt.Errorf("openbao: serve_stale_for must not be negative")
-	} else if d != 0 && d < time.Millisecond {
-		return fmt.Errorf("openbao: serve_stale_for %v is too short to be meant; write it as a duration string like \"1h\"", d)
+	if err := checkDuration("openbao: serve_stale_for", c.OpenBao.ServeStaleFor, "1h"); err != nil {
+		return err
 	}
 
 	for i := range c.Credentials {
