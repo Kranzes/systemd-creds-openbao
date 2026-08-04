@@ -59,7 +59,7 @@ in
     };
 
     settings = lib.mkOption {
-      type = format.type;
+      inherit (format) type;
       default = { };
       example = lib.literalExpression ''
         {
@@ -121,7 +121,7 @@ in
     };
 
     systemd.services.systemd-creds-openbao = {
-      environment = cfg.environment;
+      inherit (cfg) environment;
       # Otherwise a switch stops the socket along with the service, and units
       # fetching credentials while it is gone fail outright. Restarting only
       # the service keeps the socket listening, so callers queue instead.

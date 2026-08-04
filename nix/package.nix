@@ -7,6 +7,8 @@ buildGoModule (finalAttrs: {
   pname = "systemd-creds-openbao";
   version = "0.1.0";
 
+  __structuredAttrs = true;
+
   src = lib.fileset.toSource {
     root = ../go;
     fileset = lib.fileset.unions [
