@@ -99,12 +99,20 @@ path = "systemd/site-{instance}/{credential}"
 unit = "*.service"
 credential = "db"
 path = "systemd/{unit_name}/{credential}"
+
+# The instance varies, but the template glob's literal text before the "@"
+# still fixes the prefix.
+[[credentials]]
+unit = "worker@*.service"
+credential = "queue"
+path = "app/{prefix}/{instance}"
 `)
 
 	want := []string{
 		"kv/data/certs/nginx/tls-key",
 		"kv/data/systemd/site-prod/config",
 		"kv/data/systemd/+/db",
+		"kv/data/app/worker/+",
 	}
 	if p := paths(Grants(r)); !slices.Equal(p, want) {
 		t.Errorf("granted paths = %q, want %q", p, want)

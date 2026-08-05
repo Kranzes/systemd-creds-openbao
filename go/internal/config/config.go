@@ -131,19 +131,30 @@ func PlaceholderValues(unit, credential string) map[string]string {
 // PinnedValues returns the placeholder values a rule's globs already determine.
 // A glob carrying none of path.Match's metacharacters matches exactly one
 // string, so every placeholder fed from it expands to a constant that package
-// policy can write into the generated policy in place of a wildcard.
+// policy can write into the generated policy in place of a wildcard. {prefix}
+// is also determined by a template glob whose text before the first "@" is
+// literal: every unit "worker@*.service" matches starts with "worker@", which
+// is where the unit's first "@" sits. The instance has no such anchor, since
+// "*@x.service" also matches "a@b@x.service", whose {instance} is "b@x", so a
+// wildcard anywhere in the glob leaves {instance} and {unit_name} free.
 // Placeholders the globs leave free are absent from the result. A pinned value
 // may be empty, which means the rule expands to a path with an empty segment
 // and can never serve; Credential.validate rejects that rather than letting
 // package policy spend a wildcard on it.
 func PinnedValues(unitGlob, credentialGlob string) map[string]string {
 	unitFixed, credentialFixed := isLiteralGlob(unitGlob), isLiteralGlob(credentialGlob)
+	head, _, templated := strings.Cut(unitGlob, "@")
+	prefixFixed := unitFixed || (templated && isLiteralGlob(head))
 	pinned := PlaceholderValues(unitGlob, credentialGlob)
 	maps.DeleteFunc(pinned, func(p, _ string) bool {
-		if p == "{credential}" {
+		switch p {
+		case "{credential}":
 			return !credentialFixed
+		case "{prefix}":
+			return !prefixFixed
+		default:
+			return !unitFixed
 		}
-		return !unitFixed
 	})
 	return pinned
 }

@@ -439,16 +439,30 @@ func TestPinnedValues(t *testing.T) {
 		}
 	}
 
-	// A glob that can match more than one unit pins none of the values it
-	// feeds, while the credential ID is independent of it.
+	// A template glob leaves the unit and instance open, but its literal text
+	// before the "@" still fixes the prefix, and the credential ID is
+	// independent of it.
 	pinned = PinnedValues("web@*.service", "tls-key")
-	for _, p := range []string{"{unit}", "{unit_name}", "{prefix}", "{instance}"} {
+	for _, p := range []string{"{unit}", "{unit_name}", "{instance}"} {
 		if v, ok := pinned[p]; ok {
 			t.Errorf("PinnedValues[%s] = %q, want it left free", p, v)
 		}
 	}
+	if got := pinned["{prefix}"]; got != "web" {
+		t.Errorf("PinnedValues[{prefix}] = %q, want %q", got, "web")
+	}
 	if got := pinned["{credential}"]; got != "tls-key" {
 		t.Errorf("PinnedValues[{credential}] = %q, want %q", got, "tls-key")
+	}
+
+	// The "@" has to sit in literal text: "*@prod.service" also matches
+	// "a@b@prod.service", whose prefix is "a" and instance "b@prod", so a
+	// wildcard before the "@" pins nothing.
+	pinned = PinnedValues("*@prod.service", "*")
+	for _, p := range []string{"{unit}", "{unit_name}", "{prefix}", "{instance}"} {
+		if v, ok := pinned[p]; ok {
+			t.Errorf("PinnedValues[%s] = %q, want it left free", p, v)
+		}
 	}
 
 	// A non-templated unit has no instance, and the glob determines that as
