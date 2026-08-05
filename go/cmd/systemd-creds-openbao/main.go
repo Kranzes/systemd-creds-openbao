@@ -129,10 +129,15 @@ func run() int {
 	}
 	defer func() { svc.stopClient() }()
 
-	serveErr := make(chan error, len(listeners))
+	serveClosed := make(chan struct{}, len(listeners))
 	for _, l := range listeners {
 		log.Info("listening", "ADDRESS", l.Addr())
-		go func() { serveErr <- srv.Serve(l) }()
+		go func() {
+			// Serve retries accept errors and returns, nil, only once the
+			// listener is closed.
+			_ = srv.Serve(l)
+			serveClosed <- struct{}{}
+		}()
 	}
 
 	svc.notifyReady()
@@ -143,8 +148,11 @@ func run() int {
 		case <-ctx.Done():
 			log.Info("shutting down on signal")
 			return 0
-		case err := <-serveErr:
-			log.Error("serve failed", "ERROR", err)
+		case <-serveClosed:
+			// Nothing in the daemon closes a listener; the sockets are
+			// systemd's. Whatever did leaves requests queueing unanswered,
+			// so fail: the restart re-adopts the socket unit's fd.
+			log.Error("listener closed unexpectedly")
 			return 1
 		case <-srv.StatsUpdates():
 			notify(log, svc.status())
