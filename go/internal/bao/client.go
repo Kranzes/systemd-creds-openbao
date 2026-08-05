@@ -151,6 +151,10 @@ func retryable(err error) bool {
 	if errors.As(err, &tokenErr) {
 		return true
 	}
+	var tooLarge *responseTooLargeError
+	if errors.As(err, &tooLarge) {
+		return false
+	}
 	var respErr *api.ResponseError
 	if errors.As(err, &respErr) {
 		return respErr.StatusCode >= http.StatusInternalServerError ||

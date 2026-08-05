@@ -16,6 +16,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -308,6 +309,39 @@ func TestReadRejectsOversizedResponse(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "limit") {
 		t.Errorf("error %q does not report the size limit", err)
+	}
+	// A secret does not shrink on retry: classified transient, the failure
+	// would be retried forever and, serving stale, never reach the journal.
+	if retryable(err) {
+		t.Errorf("size-limit error %q classified retryable, want authoritative", err)
+	}
+}
+
+// The declared length refuses the response at RoundTrip, whose error net/http
+// wraps in a *url.Error; the classification has to survive that wrapping.
+func TestReadRejectsOversizedResponseByContentLength(t *testing.T) {
+	t.Setenv("BAO_MAX_RETRIES", "0")
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/secret/data/big", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Length", strconv.Itoa(responseSizeMax+1))
+		w.WriteHeader(http.StatusOK)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	ctx := t.Context()
+	c, err := New(ctx, tokenConfig(t, srv), testLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = c.Read(ctx, kvRef("big"))
+	if err == nil || !strings.Contains(err.Error(), "limit") {
+		t.Fatalf("err = %v, want the response refused for its declared size", err)
+	}
+	if retryable(err) {
+		t.Errorf("size-limit error %q classified retryable, want authoritative", err)
 	}
 }
 

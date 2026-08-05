@@ -29,11 +29,28 @@ func (t *limitTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	}
 	if resp.ContentLength > t.limit {
 		resp.Body.Close()
-		return nil, fmt.Errorf("response is %d bytes, over the %d byte limit", resp.ContentLength, t.limit)
+		return nil, &responseTooLargeError{size: resp.ContentLength, limit: t.limit}
 	}
 	// One byte of slack, so a body of exactly the limit still reads to EOF.
 	resp.Body = &limitBody{body: resp.Body, left: t.limit + 1, limit: t.limit}
 	return resp, nil
+}
+
+// responseTooLargeError reports a response over responseSizeMax. It carries a
+// type so retryable can pick it out of the *url.Error net/http wraps around a
+// RoundTrip failure: a secret does not shrink on retry, so classifying it as
+// transient would retry it forever and, with serve_stale_for set, keep the
+// real cause out of the journal behind the stale-data warning.
+type responseTooLargeError struct {
+	size  int64 // 0 when only discovered while reading the body
+	limit int64
+}
+
+func (e *responseTooLargeError) Error() string {
+	if e.size > 0 {
+		return fmt.Sprintf("response is %d bytes, over the %d byte limit", e.size, e.limit)
+	}
+	return fmt.Sprintf("response exceeds the %d byte limit", e.limit)
 }
 
 // limitBody fails an oversized read rather than truncating it, so the caller
@@ -46,7 +63,7 @@ type limitBody struct {
 
 func (b *limitBody) Read(p []byte) (int, error) {
 	if b.left <= 0 {
-		return 0, fmt.Errorf("response exceeds the %d byte limit", b.limit)
+		return 0, &responseTooLargeError{limit: b.limit}
 	}
 	if int64(len(p)) > b.left {
 		p = p[:b.left]
