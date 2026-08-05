@@ -110,8 +110,9 @@ func run() int {
 	}
 
 	// The cache outlives reloads, so responses fetched before a SIGHUP still
-	// cover an outage after it.
-	cache := bao.NewStaleCache(client, cfg.OpenBao.ServeStaleFor, log)
+	// cover an outage after it; ctx, not clientCtx, bounds its sweep for the
+	// same reason.
+	cache := bao.NewStaleCache(ctx, client, cfg.OpenBao.ServeStaleFor, log)
 
 	srv := credserver.New(
 		secrets.NewResolver(cfg.Credentials, cache),

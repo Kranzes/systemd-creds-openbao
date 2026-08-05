@@ -37,16 +37,51 @@ type entry struct {
 	at   time.Time
 }
 
+// sweepInterval is how often expired entries are reclaimed in the background.
+// It bounds how long an entry that can no longer be served keeps secret
+// material in memory past maxAge. A variable so tests can shorten it.
+var sweepInterval = time.Minute
+
 // NewStaleCache wraps inner, serving stale responses up to maxAge old; zero
-// disables the fallback and retains nothing.
-func NewStaleCache(inner reader, maxAge time.Duration, log *slog.Logger) *StaleCache {
-	return &StaleCache{
+// disables the fallback and retains nothing. Expired entries are reclaimed in
+// the background until ctx is canceled.
+func NewStaleCache(ctx context.Context, inner reader, maxAge time.Duration, log *slog.Logger) *StaleCache {
+	s := &StaleCache{
 		log:     log,
 		now:     time.Now,
 		inner:   inner,
 		maxAge:  maxAge,
 		entries: map[config.SecretRef]entry{},
 	}
+	go s.sweepLoop(ctx)
+	return s
+}
+
+// sweepLoop reclaims expired entries until ctx is canceled. Read only ever
+// revisits the ref in front of it, so without the sweep a secret read once
+// and never again would stay resident for the daemon's lifetime, and rules
+// serving per-instance paths would grow the map without bound.
+func (s *StaleCache) sweepLoop(ctx context.Context) {
+	t := time.NewTicker(sweepInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			s.mu.Lock()
+			s.removeExpired()
+			s.mu.Unlock()
+		}
+	}
+}
+
+// removeExpired drops the entries past maxAge. The caller holds mu.
+func (s *StaleCache) removeExpired() {
+	now := s.now()
+	maps.DeleteFunc(s.entries, func(_ config.SecretRef, e entry) bool {
+		return now.Sub(e.at) > s.maxAge
+	})
 }
 
 // Swap installs the client and staleness bound a reload produced. Entries
@@ -61,14 +96,8 @@ func (s *StaleCache) Swap(inner reader, maxAge time.Duration) {
 		clear(s.entries)
 		return
 	}
-	// A secret read once and never again is reclaimed by nothing else, since
-	// Read only ever revisits the ref in front of it. Sweeping here keeps that
-	// off the request path while still bounding how long an entry that can no
-	// longer be served keeps secret material alive.
-	now := s.now()
-	maps.DeleteFunc(s.entries, func(_ config.SecretRef, e entry) bool {
-		return now.Sub(e.at) > maxAge
-	})
+	// A bound the reload shrank takes effect now rather than at the next sweep.
+	s.removeExpired()
 }
 
 // Read implements secrets.Reader. It does the fresh read and falls back to the

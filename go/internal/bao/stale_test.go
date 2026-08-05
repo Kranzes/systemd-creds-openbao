@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -31,10 +32,16 @@ func (f *flakyReader) Read(_ context.Context, _ config.SecretRef) (map[string]an
 var errDown = &url.Error{Op: "Get", URL: "http://bao", Err: errors.New("connection refused")}
 
 // testStaleCache wraps inner with a clock the test advances via the returned
-// pointer.
+// pointer. It builds the struct directly: no sweep goroutine runs, so the
+// fake clock needs no synchronization.
 func testStaleCache(inner reader, maxAge time.Duration) (*StaleCache, *time.Time) {
-	c := NewStaleCache(inner, maxAge, testLogger())
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	c := &StaleCache{
+		log:     testLogger(),
+		inner:   inner,
+		maxAge:  maxAge,
+		entries: map[config.SecretRef]entry{},
+	}
 	c.now = func() time.Time { return now }
 	return c, &now
 }
@@ -205,6 +212,46 @@ func TestStaleCacheKeysRawAndKVSeparately(t *testing.T) {
 	if _, err := readKV(t, c); !errors.Is(err, errDown) {
 		t.Fatalf("expected the read error, got %v", err)
 	}
+}
+
+// An entry outliving maxAge has to be reclaimed without a reload or a request
+// revisiting it: the sweep is what bounds how long a daemon left alone keeps
+// secret material resident.
+func TestStaleCacheSweepsExpiredEntriesInTheBackground(t *testing.T) {
+	defer func(d time.Duration) { sweepInterval = d }(sweepInterval)
+	sweepInterval = 10 * time.Millisecond
+
+	// The clock jumps past maxAge via an atomic: the sweep goroutine reads it
+	// concurrently with the flip.
+	var expired atomic.Bool
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	inner := &flakyReader{data: map[string]any{"password": "hunter2"}}
+	c := NewStaleCache(t.Context(), inner, time.Hour, testLogger())
+	c.mu.Lock()
+	c.now = func() time.Time {
+		if expired.Load() {
+			return base.Add(61 * time.Minute)
+		}
+		return base
+	}
+	c.mu.Unlock()
+
+	if _, err := readKV(t, c); err != nil {
+		t.Fatal(err)
+	}
+	expired.Store(true)
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		c.mu.Lock()
+		n := len(c.entries)
+		c.mu.Unlock()
+		if n == 0 {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("expired entry was not swept in the background")
 }
 
 func TestStaleCacheSwapKeepsEntries(t *testing.T) {
