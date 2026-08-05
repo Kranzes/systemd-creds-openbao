@@ -79,9 +79,11 @@ Environment=BAO_CACERT=/etc/ssl/certs/openbao-ca.pem
 The fallback never replaces a fresh read: while OpenBao answers, every request
 reaches it, and an authoritative refusal (permission denied, missing secret)
 is passed through and drops the remembered value, so a revoked or deleted
-secret cannot resurface during a later outage. Unset, nothing is retained in
-memory. See [Failure behavior](#failure-behavior) for what serving stale
-looks like.
+secret cannot resurface during a later outage. A permission error counts as
+authoritative only while the daemon's own token is valid: when OpenBao rejects
+the token itself, the refusal says nothing about the secret, so the fallback
+still applies. Unset, nothing is retained in memory. See
+[Failure behavior](#failure-behavior) for what serving stale looks like.
 
 ### `[openbao.auth]`
 
@@ -160,11 +162,13 @@ serve from.
 
 A `unit` or `credential` glob carrying no wildcard of its own fixes what its
 placeholders expand to, so that rendering is known at load and is exactly what
-the policy grants. It has to clear the same two checks, which rejects a rule
-pinning a segment to `+` and a rule pinning one to nothing. The second is why
-`unit = "plain.service"` with `path = "sites/{instance}/db"` is refused: a
-non-templated unit has no instance, so the rule could never read anything, while
-the policy would still grant the whole `sites/+/db` subtree.
+the policy grants. `{prefix}` is fixed by any glob whose text before the first
+`@` is literal, `worker@*.service` included. The rendering has to clear the
+same two checks, which rejects a rule pinning a segment to `+` and a rule
+pinning one to nothing. The second is why `unit = "plain.service"` with
+`path = "sites/{instance}/db"` is refused: a non-templated unit has no
+instance, so the rule could never read anything, while the policy would still
+grant the whole `sites/+/db` subtree.
 
 A convention where every unit reads fields of `kv/systemd/<unit name>` is one
 rule:
@@ -213,7 +217,10 @@ match one request, so its placeholders resolve to one value and the policy names
 it: `unit = "nginx.service"` with `path = "certs/{unit_name}"` grants
 `kv/data/certs/nginx`. A placeholder the globs leave free becomes `+`, OpenBao's
 single-segment wildcard, so `unit = "*"` with the same path grants
-`kv/data/certs/+`. A free placeholder sharing a segment with literal text
+`kv/data/certs/+`. A template glob pins what its literal text still determines:
+`unit = "worker@*.service"` fixes `{prefix}` to `worker` even though the
+instance varies, so `path = "app/{prefix}/{instance}"` grants
+`kv/data/app/worker/+`. A free placeholder sharing a segment with literal text
 (`site-{instance}`) cannot be expressed exactly, so the whole segment widens to
 `+` and the output notes it in a comment above the path. Rules resolving to the
 same path share one block, the only
@@ -258,7 +265,11 @@ survive a reload and start over on a restart.
 The credential socket protocol has no error channel, so a refused or failed
 request surfaces to the consumer as an **empty credential**. A payload over
 systemd's 1 MiB credential limit is refused the same way rather than truncated,
-since a larger credential would make the requesting unit fail to start.
+since a larger credential would make the requesting unit fail to start. The
+one exception is a write that fails part way through: bytes already handed to
+the socket cannot be taken back, so a payload too large for the socket's send
+buffer can surface truncated instead of empty, and the journal line carries
+how many bytes were written.
 
 The reason is in the journal. Each message names the credential, where it came
 from and who asked for it, so the default output is enough to work from:
