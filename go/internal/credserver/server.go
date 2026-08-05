@@ -79,8 +79,11 @@ func (s *Server) Reload(resolver Resolver, connTimeout time.Duration) {
 
 // Serve accepts connections on l until it is closed, then returns nil.
 // There is no graceful drain. systemd owns the listening socket, so requests
-// arriving during a restart queue in the kernel; only connections in flight at
-// that instant are cut off, with an empty credential.
+// arriving during a restart queue in the kernel; connections in flight at
+// that instant are cut off. One cut before its write surfaces as an empty
+// credential; one cut mid-write of a payload too large for the socket's send
+// buffer surfaces as a truncated one, since the peer takes the bytes already
+// queued plus EOF for the whole value.
 func (s *Server) Serve(l net.Listener) error {
 	defer func() { _ = l.Close() }()
 
@@ -107,8 +110,9 @@ func (s *Server) Serve(l net.Listener) error {
 // handle serves a single credential request.
 //
 // The protocol has no error channel: systemd reads until EOF and takes
-// whatever arrived as the value. Any failure closes the connection unwritten,
-// which the requesting unit sees as an empty credential.
+// whatever arrived as the value. A failure before the write closes the
+// connection unwritten, which the requesting unit sees as an empty
+// credential.
 func (s *Server) handle(conn net.Conn) {
 	defer func() { _ = conn.Close() }()
 
