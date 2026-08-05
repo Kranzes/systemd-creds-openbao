@@ -143,6 +143,23 @@ path = "p"
 	}
 }
 
+func TestResolveNullField(t *testing.T) {
+	r := newResolver(t, `
+[[credentials]]
+unit = "*"
+path = "p"
+`, &fakeReader{kv: map[string]map[string]any{
+		"kv/p": {"password": nil},
+	}})
+
+	// A present-but-null field must refuse the request: JSON-encoded it would
+	// serve the four bytes "null", which a consumer reads as a real value.
+	_, _, err := r.Resolve(context.Background(), credserver.Request{Unit: "a.service", Credential: "password"})
+	if err == nil || !strings.Contains(err.Error(), "null") {
+		t.Errorf("err = %v, want null-field error", err)
+	}
+}
+
 func TestResolveJSONFormat(t *testing.T) {
 	r := newResolver(t, `
 [[credentials]]

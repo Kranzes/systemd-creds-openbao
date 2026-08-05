@@ -71,6 +71,11 @@ func (r *Resolver) Resolve(ctx context.Context, req credserver.Request) ([]byte,
 	if !ok {
 		return nil, "", fmt.Errorf("secret %q has no field %q", location, field)
 	}
+	if value == nil {
+		// JSON-encoding a null field would serve the literal text "null",
+		// which looks like a real value; refuse like a missing field instead.
+		return nil, "", fmt.Errorf("secret %q field %q is null", location, field)
+	}
 	out, err := encodeField(value)
 	if err != nil {
 		return nil, "", err
