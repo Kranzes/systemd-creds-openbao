@@ -311,6 +311,60 @@ func TestReadRejectsOversizedResponse(t *testing.T) {
 	}
 }
 
+// A 403 read means one thing with a valid token (this path is denied) and
+// another with a rejected one (OpenBao never judged the path). Only the first
+// may count as authoritative and drop what StaleCache remembers.
+func TestReadForbiddenClassification(t *testing.T) {
+	var tokenValid atomic.Bool
+	mux := http.NewServeMux()
+	forbid := func(w http.ResponseWriter) {
+		w.WriteHeader(http.StatusForbidden)
+		if err := json.NewEncoder(w).Encode(map[string]any{"errors": []string{"permission denied"}}); err != nil {
+			t.Errorf("encoding response: %v", err)
+		}
+	}
+	mux.HandleFunc("/v1/secret/data/denied", func(w http.ResponseWriter, r *http.Request) {
+		forbid(w)
+	})
+	mux.HandleFunc("/v1/auth/token/lookup-self", func(w http.ResponseWriter, r *http.Request) {
+		if !tokenValid.Load() {
+			forbid(w)
+			return
+		}
+		if err := json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"id": "test-token"}}); err != nil {
+			t.Errorf("encoding response: %v", err)
+		}
+	})
+	mux.HandleFunc("/v1/auth/token/renew-self", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		if err := json.NewEncoder(w).Encode(map[string]any{"errors": []string{"lease is not renewable"}}); err != nil {
+			t.Errorf("encoding response: %v", err)
+		}
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	client, err := New(context.Background(), tokenConfig(t, srv), testLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tokenValid.Store(true)
+	_, err = client.Read(context.Background(), kvRef("denied"))
+	if err == nil || retryable(err) {
+		t.Errorf("403 with a valid token classified retryable (err = %v), want authoritative", err)
+	}
+
+	tokenValid.Store(false)
+	_, err = client.Read(context.Background(), kvRef("denied"))
+	if err == nil || !retryable(err) {
+		t.Errorf("403 with a rejected token classified authoritative (err = %v), want retryable", err)
+	}
+	if err == nil || !strings.Contains(err.Error(), "token") {
+		t.Errorf("error %q does not blame the token", err)
+	}
+}
+
 func TestReadKVNotFound(t *testing.T) {
 	client := testClient(t)
 

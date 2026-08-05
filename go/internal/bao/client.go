@@ -58,7 +58,7 @@ func (c *Client) Read(ctx context.Context, ref config.SecretRef) (map[string]any
 	if ref.Raw {
 		secret, err := c.api.Logical().ReadWithContext(ctx, ref.Path)
 		if err != nil {
-			return nil, err
+			return nil, c.classifyForbidden(ctx, err)
 		}
 		if secret == nil || secret.Data == nil {
 			return nil, api.ErrSecretNotFound
@@ -68,7 +68,7 @@ func (c *Client) Read(ctx context.Context, ref config.SecretRef) (map[string]any
 
 	secret, err := c.api.KVv2(ref.Mount).Get(ctx, ref.Path)
 	if err != nil {
-		return nil, err
+		return nil, c.classifyForbidden(ctx, err)
 	}
 	if secret.Data == nil {
 		// A soft-deleted or destroyed version has an empty payload;
@@ -147,6 +147,10 @@ func (c *Client) withRetry(ctx context.Context, what string, failFast bool, do f
 // retryable reports whether err is transient (transport failure, 5xx,
 // throttling) rather than a definitive rejection.
 func retryable(err error) bool {
+	var tokenErr *tokenRejectedError
+	if errors.As(err, &tokenErr) {
+		return true
+	}
 	var respErr *api.ResponseError
 	if errors.As(err, &respErr) {
 		return respErr.StatusCode >= http.StatusInternalServerError ||
@@ -154,6 +158,35 @@ func retryable(err error) bool {
 	}
 	var urlErr *url.Error
 	return errors.As(err, &urlErr)
+}
+
+// tokenRejectedError marks a read refused because OpenBao rejected the
+// daemon's own token. retryable treats it as transient: the refusal says
+// nothing about the secret, so it must not count as an authoritative answer
+// and drop what StaleCache remembers.
+type tokenRejectedError struct{ err error }
+
+func (e *tokenRejectedError) Error() string {
+	return "OpenBao rejected the daemon's token: " + e.err.Error()
+}
+
+func (e *tokenRejectedError) Unwrap() error { return e.err }
+
+// classifyForbidden tells a 403 on the read path apart from a 403 caused by
+// the daemon's token having expired or been revoked. Lookup-self is allowed
+// for any valid token, so a 403 from it as well puts the blame on the token;
+// any other outcome leaves the read's refusal standing as the answer about
+// the secret.
+func (c *Client) classifyForbidden(ctx context.Context, err error) error {
+	var respErr *api.ResponseError
+	if !errors.As(err, &respErr) || respErr.StatusCode != http.StatusForbidden {
+		return err
+	}
+	_, lookupErr := c.api.Auth().Token().LookupSelfWithContext(ctx)
+	if errors.As(lookupErr, &respErr) && respErr.StatusCode == http.StatusForbidden {
+		return &tokenRejectedError{err: err}
+	}
+	return err
 }
 
 // login authenticates with the configured method. Each method only builds the

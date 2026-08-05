@@ -152,6 +152,29 @@ func TestStaleCacheAuthoritativeErrorInvalidatesEntry(t *testing.T) {
 	}
 }
 
+// A 403 blamed on the daemon's own token must serve stale and keep the entry:
+// with a static token this is exactly the failure the daemon cannot self-heal,
+// so it is where the fallback matters most.
+func TestStaleCacheServesStaleWhenTheTokenIsRejected(t *testing.T) {
+	inner := &flakyReader{data: map[string]any{"password": "hunter2"}}
+	c, _ := testStaleCache(inner, time.Hour)
+
+	if _, err := readKV(t, c); err != nil {
+		t.Fatal(err)
+	}
+	inner.failWith = &tokenRejectedError{err: &api.ResponseError{StatusCode: http.StatusForbidden}}
+	got, err := readKV(t, c)
+	if err != nil {
+		t.Fatalf("expected stale data, got %v", err)
+	}
+	if got["password"] != "hunter2" {
+		t.Fatalf("got %v", got)
+	}
+	if len(c.entries) != 1 {
+		t.Fatal("entry was dropped on a token rejection")
+	}
+}
+
 func TestStaleCacheDisabledRetainsNothing(t *testing.T) {
 	inner := &flakyReader{data: map[string]any{"password": "hunter2"}}
 	c, _ := testStaleCache(inner, 0)
