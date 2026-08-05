@@ -4,17 +4,16 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-
-	"github.com/kranzes/systemd-creds-openbao/go/internal/credserver"
 )
 
 // responseSizeMax bounds the body of an OpenBao response. The client library
 // buffers a whole response before anything looks at its size, and parsing tees
 // it into a second buffer, so without a limit one read of a hostile or
 // misconfigured server turns into gigabytes of heap. The daemon can serve at
-// most CredentialSizeMax; the rest is room for the JSON envelope and the other
-// fields of the same secret.
-const responseSizeMax = 4 * credserver.CredentialSizeMax
+// most 1 MiB (credserver.CredentialSizeMax, systemd's credential size limit);
+// the rest is room for the JSON envelope and the other fields of the same
+// secret.
+const responseSizeMax = 4 * 1024 * 1024
 
 // limitTransport caps the response body of every OpenBao request.
 type limitTransport struct {
