@@ -41,10 +41,10 @@ func main() {
 func run() int {
 	var (
 		configPath  = flag.String("config", "/etc/systemd-creds-openbao/config.toml", "path to the configuration file")
-		checkOnly   = flag.Bool("check", false, "validate the configuration and exit")
-		printPolicy = flag.Bool("print-policy", false, "print an OpenBao policy covering the configured rules and exit")
+		checkOnly   = flag.Bool("check", false, "validate the configuration")
+		printPolicy = flag.Bool("print-policy", false, "print an OpenBao policy covering the configured rules")
 		logLevel    = flag.String("log-level", "info", "log level: debug, info, warn, or error")
-		showVersion = flag.Bool("version", false, "print the version and exit")
+		showVersion = flag.Bool("version", false, "print the version")
 	)
 	flag.Parse()
 
