@@ -36,8 +36,8 @@ token_file = "${CREDENTIALS_DIRECTORY}/openbao-token"
 # mount = "jwt"
 
 # Rules map a (unit, credential) request to a secret. First match wins;
-# unmatched requests are refused. See the README for all keys, the raw
-# backend, and path placeholders like {unit_name} and {credential}.
+# unmatched requests are refused. See docs/configuration.md for all keys,
+# the raw backend, and path placeholders like {unit_name} and {credential}.
 [[credentials]]
 unit = "myapp.service"
 credential = "db-password"

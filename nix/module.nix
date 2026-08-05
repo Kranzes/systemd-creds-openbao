@@ -49,11 +49,11 @@ in
       description = ''
         Environment variables for the daemon. The connection to OpenBao
         (address, TLS, namespace, timeout) is configured entirely through
-        the `BAO_*`/`VAULT_*` variables the client library reads; see
-        [The connection](https://github.com/kranzes/systemd-creds-openbao#the-connection).
+        the `BAO_*`/`VAULT_*` variables the client library reads. See
+        [The connection](https://github.com/kranzes/systemd-creds-openbao/blob/master/docs/configuration.md#the-connection).
 
         These end up in the world-readable unit file, so they take connection
-        settings only; pass secret material as systemd credentials instead
+        settings only. Pass secret material as systemd credentials instead
         (see {option}`services.systemd-creds-openbao.settings`).
       '';
     };
@@ -78,10 +78,10 @@ in
       '';
       description = ''
         Contents of the daemon's TOML configuration file:
-        [`[openbao]`](https://github.com/kranzes/systemd-creds-openbao#openbao),
-        [`[openbao.auth]`](https://github.com/kranzes/systemd-creds-openbao#openbaoauth),
-        [`[[credentials]]`](https://github.com/kranzes/systemd-creds-openbao#credentials),
-        and [`[server]`](https://github.com/kranzes/systemd-creds-openbao#server).
+        [`[openbao]`](https://github.com/kranzes/systemd-creds-openbao/blob/master/docs/configuration.md#openbao),
+        [`[openbao.auth]`](https://github.com/kranzes/systemd-creds-openbao/blob/master/docs/configuration.md#openbaoauth),
+        [`[[credentials]]`](https://github.com/kranzes/systemd-creds-openbao/blob/master/docs/configuration.md#credentials),
+        and [`[server]`](https://github.com/kranzes/systemd-creds-openbao/blob/master/docs/configuration.md#server).
 
         Pass the token and any other confidential material to the daemon as
         systemd credentials, in whichever form fits your secret management:
