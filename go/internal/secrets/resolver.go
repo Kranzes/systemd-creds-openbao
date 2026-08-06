@@ -38,7 +38,7 @@ func (r *Resolver) Resolve(ctx context.Context, req credserver.Request) ([]byte,
 		return nil, "", fmt.Errorf("no credential rule matches unit %q credential %q", req.Unit, req.Credential)
 	}
 
-	// One replacer serves every template of this request; see config.Replacer.
+	// One replacer serves every template of this request. See config.Replacer.
 	expand := config.Replacer(config.PlaceholderValues(req.Unit, req.Credential))
 
 	ref := config.SecretRef{Raw: rule.Backend == config.BackendRaw, Path: expand.Replace(rule.Path)}
@@ -73,7 +73,7 @@ func (r *Resolver) Resolve(ctx context.Context, req credserver.Request) ([]byte,
 	}
 	if value == nil {
 		// JSON-encoding a null field would serve the literal text "null",
-		// which looks like a real value; refuse like a missing field instead.
+		// which looks like a real value. Refuse like a missing field instead.
 		return nil, "", fmt.Errorf("secret %q field %q is null", location, field)
 	}
 	out, err := encodeField(value)

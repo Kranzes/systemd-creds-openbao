@@ -232,7 +232,7 @@ func TestParseErrors(t *testing.T) {
 			// A bare integer is nanoseconds, so "15" is not "15s".
 			name: "bare integer connection timeout",
 			toml: "[server]\nconnection_timeout = 15",
-			want: "too short to be meant",
+			want: "a bare integer decodes as nanoseconds",
 		},
 		{
 			name: "negative serve_stale_for",
@@ -242,7 +242,7 @@ func TestParseErrors(t *testing.T) {
 		{
 			name: "bare integer serve_stale_for",
 			toml: "[openbao]\nserve_stale_for = 3600",
-			want: "too short to be meant",
+			want: "a bare integer decodes as nanoseconds",
 		},
 		{
 			// The resolver refuses these at request time, so such a rule

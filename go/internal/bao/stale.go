@@ -20,7 +20,7 @@ type reader interface {
 // fresh read fails with a transient error, so a service can still start
 // while OpenBao is unreachable. No fresh read is ever skipped, and an
 // authoritative refusal (permission denied, missing secret) is returned
-// as-is; only errors OpenBao never got to answer fall back. It implements
+// as-is. Only errors OpenBao never got to answer fall back. It implements
 // secrets.Reader and is safe for concurrent use.
 type StaleCache struct {
 	log *slog.Logger
@@ -42,7 +42,7 @@ type entry struct {
 // material in memory past maxAge. A variable so tests can shorten it.
 var sweepInterval = time.Minute
 
-// NewStaleCache wraps inner, serving stale responses up to maxAge old; zero
+// NewStaleCache wraps inner, serving stale responses up to maxAge old. Zero
 // disables the fallback and retains nothing. Expired entries are reclaimed in
 // the background until ctx is canceled.
 func NewStaleCache(ctx context.Context, inner reader, maxAge time.Duration, log *slog.Logger) *StaleCache {

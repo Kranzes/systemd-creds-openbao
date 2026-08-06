@@ -10,8 +10,8 @@ import (
 // buffers a whole response before anything looks at its size, and parsing tees
 // it into a second buffer, so without a limit one read of a hostile or
 // misconfigured server turns into gigabytes of heap. The daemon can serve at
-// most 1 MiB (credserver.CredentialSizeMax, systemd's credential size limit);
-// the rest is room for the JSON envelope and the other fields of the same
+// most 1 MiB (credserver.CredentialSizeMax, systemd's credential size limit).
+// The rest is room for the JSON envelope and the other fields of the same
 // secret.
 const responseSizeMax = 4 * 1024 * 1024
 

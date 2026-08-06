@@ -39,7 +39,7 @@ type Server struct {
 	statsCh chan struct{}
 
 	// trustUID is a second uid to accept beyond root. It is zero in
-	// production; the tests set it because they connect as whoever runs them.
+	// production. The tests set it because they connect as whoever runs them.
 	trustUID uint32
 }
 
@@ -50,7 +50,7 @@ type serving struct {
 }
 
 // New returns a Server that answers requests using resolver. connTimeout
-// bounds the backend fetch and the payload write separately; zero or negative
+// bounds the backend fetch and the payload write separately. Zero or negative
 // means no limit.
 func New(resolver Resolver, log *slog.Logger, connTimeout time.Duration) *Server {
 	s := &Server{log: log, statsCh: make(chan struct{}, 1)}
@@ -79,9 +79,9 @@ func (s *Server) Reload(resolver Resolver, connTimeout time.Duration) {
 
 // Serve accepts connections on l until it is closed, then returns nil.
 // There is no graceful drain. systemd owns the listening socket, so requests
-// arriving during a restart queue in the kernel; connections in flight at
+// arriving during a restart queue in the kernel. Connections in flight at
 // that instant are cut off. One cut before its write surfaces as an empty
-// credential; one cut mid-write of a payload too large for the socket's send
+// credential. One cut mid-write of a payload too large for the socket's send
 // buffer surfaces as a truncated one, since the peer takes the bytes already
 // queued plus EOF for the whole value.
 func (s *Server) Serve(l net.Listener) error {

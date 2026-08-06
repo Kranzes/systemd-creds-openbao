@@ -23,7 +23,7 @@ const (
 
 // Secret backends a credential rule can read from.
 const (
-	BackendKV  = "kv"  // KV v2; v1 is only reachable through raw
+	BackendKV  = "kv"  // KV v2. v1 is only reachable through raw
 	BackendRaw = "raw" // verbatim read of an arbitrary API path
 )
 
@@ -64,7 +64,7 @@ type Auth struct {
 
 	// Required for token auth. Unset, the client library's
 	// BAO_TOKEN/VAULT_TOKEN is used instead, which is how the tests drive
-	// token auth; a deployment passes the token as a file, since systemd
+	// token auth. A deployment passes the token as a file, since systemd
 	// exposes a unit's environment to any local user.
 	TokenFile string `toml:"token_file"`
 
@@ -77,11 +77,11 @@ type Auth struct {
 
 	// Cert login uses the client certificate from
 	// BAO_CLIENT_CERT/BAO_CLIENT_KEY. CertRole restricts it to one
-	// certificate role; unset, the server tries all of them.
+	// certificate role. Unset, the server tries all of them.
 	CertRole string `toml:"cert_role"`
 
 	// The JWT is a bearer credential and has no inline key. JWTRole names
-	// the role to log in with; unset, the mount's default role applies.
+	// the role to log in with. Unset, the mount's default role applies.
 	JWTFile string `toml:"jwt_file"`
 	JWTRole string `toml:"jwt_role"`
 
@@ -139,7 +139,7 @@ func PlaceholderValues(unit, credential string) map[string]string {
 // wildcard anywhere in the glob leaves {instance} and {unit_name} free.
 // Placeholders the globs leave free are absent from the result. A pinned value
 // may be empty, which means the rule expands to a path with an empty segment
-// and can never serve; Credential.validate rejects that rather than letting
+// and can never serve. Credential.validate rejects that rather than letting
 // package policy spend a wildcard on it.
 func PinnedValues(unitGlob, credentialGlob string) map[string]string {
 	unitFixed, credentialFixed := isLiteralGlob(unitGlob), isLiteralGlob(credentialGlob)
@@ -180,13 +180,13 @@ func isLiteralGlob(glob string) bool {
 }
 
 // Credential maps requests to a secret in OpenBao. Rules are evaluated in file
-// order; the first rule whose Unit and Credential globs both match wins.
+// order. The first rule whose Unit and Credential globs both match wins.
 // Requests matching no rule are refused.
 //
 // Path, Field, and Mount support the placeholders in Placeholders.
 type Credential struct {
-	// Unit is a glob matched against the requesting unit name. Required;
-	// granting every unit takes an explicit "*".
+	// Unit is a glob matched against the requesting unit name. Required.
+	// Granting every unit takes an explicit "*".
 	Unit string `toml:"unit"`
 	// Credential is a glob matched against the requested credential ID.
 	// Default: "*".
@@ -207,9 +207,9 @@ type Credential struct {
 	Field string `toml:"field"`
 }
 
-// SecretRef names one secret to read. Package secrets builds it from a rule and
-// a request, package bao reads it; carrying the backend with the path is what
-// keeps the two from switching on it separately.
+// SecretRef names one secret to read. Package secrets builds it from a rule
+// and a request, and package bao reads it. Carrying the backend with the path
+// is what keeps the two from switching on it separately.
 type SecretRef struct {
 	// Raw reads Path as a full API path instead of a KV v2 secret under Mount.
 	Raw bool
@@ -235,7 +235,7 @@ func checkDuration(what string, d time.Duration, example string) error {
 		return fmt.Errorf("%s must not be negative", what)
 	}
 	if d != 0 && d < time.Millisecond {
-		return fmt.Errorf("%s %v is too short to be meant; write it as a duration string like %q", what, d, example)
+		return fmt.Errorf("%s %v: a bare integer decodes as nanoseconds, write it as a duration string like %q", what, d, example)
 	}
 	return nil
 }
@@ -243,7 +243,7 @@ func checkDuration(what string, d time.Duration, example string) error {
 // CheckSegments rejects an API path with an empty, ".", or ".." segment, which
 // could make URL normalization on the server resolve the read to a secret the
 // rule never granted. Package secrets applies it after placeholder expansion,
-// where the values come from the requesting side; a literal path carrying one
+// where the values come from the requesting side. A literal path carrying one
 // is rejected here because it could never serve anything anyway.
 func CheckSegments(what, p string) error {
 	for seg := range strings.SplitSeq(p, "/") {
@@ -266,13 +266,12 @@ func checkLiteral(what, p string) error {
 
 // checkPolicyWildcards rejects text carrying one of the wildcards OpenBao's
 // policy syntax recognizes: "+" matches any one segment, and a trailing "*"
-// matches any suffix. Package policy writes a rule's path into the generated
-// policy, while package secrets requests it verbatim, so a rule carrying either
-// grants a subtree it can never read a secret from. The unit and credential
-// globs reach the policy the same way, through the values PinnedValues fixes,
-// which is why Credential.validate runs this over the pinned rendering as well
-// as the literal text: "+" is none of path.Match's metacharacters, so nothing
-// else would stop a glob from pinning a segment to one.
+// matches any suffix. A rule carrying either grants a subtree it can never
+// read a secret from. The unit and credential globs reach the policy the same
+// way, through the values PinnedValues fixes, which is why Credential.validate
+// runs this over the pinned rendering as well as the literal text: "+" is none
+// of path.Match's metacharacters, so nothing else would stop a glob from
+// pinning a segment to one.
 func checkPolicyWildcards(what, p string) error {
 	var found string
 	switch {
@@ -283,7 +282,7 @@ func checkPolicyWildcards(what, p string) error {
 	default:
 		return nil
 	}
-	return fmt.Errorf("%s %q contains %q, a wildcard in an OpenBao policy; the daemon reads the path verbatim, so the rule would grant far more than it can serve", what, p, found)
+	return fmt.Errorf("%s %q contains %q, a wildcard in an OpenBao policy: the daemon reads the path verbatim, so the rule would grant far more than it can serve", what, p, found)
 }
 
 // Parse decodes, applies defaults to, and validates a configuration.

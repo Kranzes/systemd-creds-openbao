@@ -49,7 +49,7 @@ func run() int {
 	flag.Parse()
 
 	if flag.NArg() > 0 {
-		fmt.Fprintf(os.Stderr, "unexpected argument %q; the configuration file is set with -config\n", flag.Arg(0))
+		fmt.Fprintf(os.Stderr, "unexpected argument %q (the configuration file is set with -config)\n", flag.Arg(0))
 		return 2
 	}
 
@@ -100,7 +100,7 @@ func run() int {
 		return 1
 	}
 
-	// The client's context governs its token renewal; a reload cancels it.
+	// The client's context governs its token renewal. A reload cancels it.
 	clientCtx, stopClient := context.WithCancel(ctx)
 	client, err := bao.New(clientCtx, cfg.OpenBao, log)
 	if err != nil {
@@ -110,7 +110,7 @@ func run() int {
 	}
 
 	// The cache outlives reloads, so responses fetched before a SIGHUP still
-	// cover an outage after it; ctx, not clientCtx, bounds its sweep for the
+	// cover an outage after it. ctx, not clientCtx, bounds its sweep for the
 	// same reason.
 	cache := bao.NewStaleCache(ctx, client, cfg.OpenBao.ServeStaleFor, log)
 
@@ -149,7 +149,7 @@ func run() int {
 			log.Info("shutting down on signal")
 			return 0
 		case <-serveClosed:
-			// Nothing in the daemon closes a listener; the sockets are
+			// Nothing in the daemon closes a listener. The sockets are
 			// systemd's. Whatever did leaves requests queueing unanswered,
 			// so fail: the restart re-adopts the socket unit's fd.
 			log.Error("listener closed unexpectedly")
@@ -264,7 +264,7 @@ func listen() ([]net.Listener, error) {
 		return nil, fmt.Errorf("checking for socket activation: %w", err)
 	}
 	if len(listeners) == 0 {
-		return nil, errors.New("no sockets received; start via systemd-creds-openbao.socket")
+		return nil, errors.New("no sockets received (start via systemd-creds-openbao.socket)")
 	}
 	for i, l := range listeners {
 		if l == nil {

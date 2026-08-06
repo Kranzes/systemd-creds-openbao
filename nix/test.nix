@@ -149,7 +149,7 @@ in
           machine.wait_for_unit("openbao.service")
           machine.wait_for_open_port(8200)
           init_output = json.loads(machine.succeed("bao operator init"))
-          # The static seal auto-unseals after init; `bao status` exits zero
+          # The static seal auto-unseals after init. `bao status` exits zero
           # once it has.
           machine.wait_until_succeeds("bao status")
           machine.succeed(f"bao login {init_output['root_token']}")
@@ -228,7 +228,7 @@ in
           scoped = json.loads(machine.succeed("bao token create -policy=systemd-creds"))
           scoped_token = scoped["auth"]["client_token"]
           machine.succeed(f"umask 077; printf %s {scoped_token} > /run/keys/openbao-token")
-          # Restart, so this checks the scoped token from a cold start; the
+          # Restart, so this checks the scoped token from a cold start. The
           # last subtest covers picking one up on reload.
           machine.succeed("systemctl restart systemd-creds-openbao.service")
 

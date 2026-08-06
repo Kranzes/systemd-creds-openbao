@@ -71,8 +71,8 @@ func (c *Client) Read(ctx context.Context, ref config.SecretRef) (map[string]any
 		return nil, c.classifyForbidden(ctx, err)
 	}
 	if secret.Data == nil {
-		// A soft-deleted or destroyed version has an empty payload;
-		// serving it would hand the unit a literal "null".
+		// A soft-deleted or destroyed version has an empty payload.
+		// Serving it would hand the unit a literal "null".
 		return nil, errors.New("secret version is deleted or has no data")
 	}
 	return secret.Data, nil
@@ -112,7 +112,7 @@ func (c *Client) authenticate(ctx context.Context) error {
 // loginWithRetry logs in with backoff, re-reading any credential files on
 // every attempt so rotated credentials are picked up. failFast ends the loop
 // on a definitive rejection, failing the unit at startup instead of retrying
-// forever; without it a long-running daemon waits out a rotation. Transient
+// forever. Without it a long-running daemon waits out a rotation. Transient
 // failures back off in process rather than crash-looping the daemon into
 // systemd's start limit.
 func (c *Client) loginWithRetry(ctx context.Context, failFast bool) (*api.Secret, error) {
@@ -128,7 +128,7 @@ const (
 )
 
 // withRetry calls do until it succeeds or ctx is canceled, backing off between
-// attempts; with failFast a definitive rejection ends the loop instead.
+// attempts. With failFast a definitive rejection ends the loop instead.
 func (c *Client) withRetry(ctx context.Context, what string, failFast bool, do func() (*api.Secret, error)) (*api.Secret, error) {
 	backoff := backoffStart
 	for {
@@ -178,8 +178,8 @@ func (e *tokenRejectedError) Unwrap() error { return e.err }
 
 // classifyForbidden tells a 403 on the read path apart from a 403 caused by
 // the daemon's token having expired or been revoked. Lookup-self is allowed
-// for any valid token, so a 403 from it as well puts the blame on the token;
-// any other outcome leaves the read's refusal standing as the answer about
+// for any valid token, so a 403 from it as well puts the blame on the token.
+// Any other outcome leaves the read's refusal standing as the answer about
 // the secret.
 func (c *Client) classifyForbidden(ctx context.Context, err error) error {
 	var respErr *api.ResponseError
@@ -194,7 +194,7 @@ func (c *Client) classifyForbidden(ctx context.Context, err error) error {
 }
 
 // login authenticates with the configured method. Each method only builds the
-// request body; issuing it and adopting the token is the same either way, and
+// request body. Issuing it and adopting the token is the same either way, and
 // the credential files are read here rather than at construction so a rotated
 // one is picked up at re-authentication.
 func (c *Client) login(ctx context.Context) (*api.Secret, error) {
@@ -311,7 +311,7 @@ func (c *Client) manageTokenLifecycle(ctx context.Context, secret *api.Secret, c
 	for {
 		ttl, err := secret.TokenTTL()
 		if err != nil || ttl <= 0 {
-			return // non-expiring token; nothing to manage
+			return // nothing to manage for a non-expiring token
 		}
 
 		var renewErr error
@@ -343,7 +343,7 @@ func (c *Client) manageTokenLifecycle(ctx context.Context, secret *api.Secret, c
 			if renewErr != nil && retryable(renewErr) {
 				continue
 			}
-			c.log.Error("OpenBao token is about to expire and cannot be re-acquired; provide a fresh token and restart")
+			c.log.Error("OpenBao token is about to expire and cannot be re-acquired. Provide a fresh token and restart")
 			return
 		}
 		next, err := c.loginWithRetry(ctx, false)
@@ -377,7 +377,7 @@ func (c *Client) renewUntilExpiry(ctx context.Context, secret *api.Secret) error
 		case err := <-watcher.DoneCh():
 			return err
 		case renewal := <-watcher.RenewCh():
-			// A renewal carries the new TTL under auth; the top-level
+			// A renewal carries the new TTL under auth. The top-level
 			// lease duration stays zero.
 			ttl, _ := renewal.Secret.TokenTTL()
 			c.log.Debug("renewed OpenBao token", "TTL", ttl)
@@ -398,7 +398,7 @@ func sleep(ctx context.Context, d time.Duration) bool {
 }
 
 // valueOrFile returns the literal value, or the contents of file when one is
-// configured; name is the config key used in error messages. The path may
+// configured. name is the config key used in error messages. The path may
 // reference environment variables (${CREDENTIALS_DIRECTORY}/...).
 func valueOrFile(literal, file, name string) (string, error) {
 	if file == "" {
