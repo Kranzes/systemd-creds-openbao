@@ -16,7 +16,7 @@ import (
 const header = `# OpenBao policy for systemd-creds-openbao, generated with -print-policy.
 # A placeholder the rule's globs leave free becomes "+", OpenBao's
 # single-segment wildcard. See
-# https://github.com/kranzes/systemd-creds-openbao#the-daemons-own-policy
+# https://github.com/kranzes/systemd-creds-openbao/blob/master/docs/cli.md#-print-policy
 `
 
 // Grant is one path the generated policy allows the daemon's token to read.
