@@ -30,7 +30,7 @@ MemoryZSwapMax=0
 LockPersonality=yes
 MemoryDenyWriteExecute=yes
 PrivateDevices=yes
-# The identity mapping keeps SO_PEERCRED uids meaningful; the daemon's
+# The identity mapping keeps SO_PEERCRED uids meaningful. The daemon's
 # peer-trust check relies on them.
 PrivateUsers=identity
 ProcSubset=pid

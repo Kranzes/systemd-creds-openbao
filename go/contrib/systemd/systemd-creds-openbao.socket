@@ -4,7 +4,7 @@ Documentation=https://github.com/kranzes/systemd-creds-openbao
 
 [Socket]
 ListenStream=/run/systemd-creds-openbao.sock
-# Credentials are fetched by the service manager (root); nobody else needs
+# Credentials are fetched by the service manager (root). Nobody else needs
 # to talk to this socket.
 SocketMode=0600
 SocketUser=root

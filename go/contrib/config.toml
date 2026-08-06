@@ -2,7 +2,7 @@
 #
 # The connection to OpenBao (address, TLS, namespace, timeout) is
 # configured through the client library's environment variables (BAO_ADDR,
-# BAO_CACERT, ...); set them with Environment= on systemd-creds-openbao.service.
+# BAO_CACERT, ...). Set them with Environment= on systemd-creds-openbao.service.
 
 [openbao]
 # Keep the last successfully read value of each secret in memory and serve
@@ -19,8 +19,8 @@
 method = "token"
 token_file = "${CREDENTIALS_DIRECTORY}/openbao-token"
 
-# AppRole authentication. The role ID may be inline; the secret ID can only come
-# from a file, ideally a systemd credential like the token above
+# AppRole authentication. The role ID may be inline. The secret ID can only
+# come from a file, ideally a systemd credential like the token above
 # (LoadCredential=openbao-secret-id:/path/to/secret-id):
 # method = "approle"
 # role_id = "my-role-id"
@@ -28,15 +28,15 @@ token_file = "${CREDENTIALS_DIRECTORY}/openbao-token"
 # mount = "approle"
 
 # JWT authentication. The JWT can only come from a file (it is re-read on
-# every login, so a rotated token on disk is picked up); the role may be
+# every login, so a rotated token on disk is picked up). The role may be
 # inline:
 # method = "jwt"
 # jwt_file = "${CREDENTIALS_DIRECTORY}/openbao-jwt"
 # jwt_role = "my-role"
 # mount = "jwt"
 
-# Rules map a (unit, credential) request to a secret. First match wins;
-# unmatched requests are refused. See docs/configuration.md for all keys,
+# Rules map a (unit, credential) request to a secret. First match wins.
+# Unmatched requests are refused. See docs/configuration.md for all keys,
 # the raw backend, and path placeholders like {unit_name} and {credential}.
 [[credentials]]
 unit = "myapp.service"

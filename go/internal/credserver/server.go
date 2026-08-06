@@ -1,5 +1,5 @@
 // Package credserver implements the server side of systemd's credential
-// socket protocol: it takes the requesting unit and credential ID from the
+// socket protocol. It takes the requesting unit and credential ID from the
 // peer address and writes the payload, closing to signal the end of it.
 package credserver
 
@@ -39,7 +39,7 @@ type Server struct {
 	statsCh chan struct{}
 
 	// trustUID is a second uid to accept beyond root. It is zero in
-	// production; the tests set it because they connect as whoever runs them.
+	// production. The tests set it because they connect as whoever runs them.
 	trustUID uint32
 }
 
@@ -50,8 +50,8 @@ type serving struct {
 }
 
 // New returns a Server that answers requests using resolver. connTimeout
-// bounds the backend fetch and the payload write separately; zero or negative
-// means no limit.
+// applies to the backend fetch and the payload write separately. Zero or
+// negative means no limit.
 func New(resolver Resolver, log *slog.Logger, connTimeout time.Duration) *Server {
 	s := &Server{log: log, statsCh: make(chan struct{}, 1)}
 	s.Reload(resolver, connTimeout)
@@ -79,11 +79,8 @@ func (s *Server) Reload(resolver Resolver, connTimeout time.Duration) {
 
 // Serve accepts connections on l until it is closed, then returns nil.
 // There is no graceful drain. systemd owns the listening socket, so requests
-// arriving during a restart queue in the kernel; connections in flight at
-// that instant are cut off. One cut before its write surfaces as an empty
-// credential; one cut mid-write of a payload too large for the socket's send
-// buffer surfaces as a truncated one, since the peer takes the bytes already
-// queued plus EOF for the whole value.
+// arriving during a restart queue in the kernel, and connections in flight
+// are cut off, surfacing as an empty or truncated credential.
 func (s *Server) Serve(l net.Listener) error {
 	defer func() { _ = l.Close() }()
 
@@ -109,7 +106,7 @@ func (s *Server) Serve(l net.Listener) error {
 
 // handle serves a single credential request.
 //
-// The protocol has no error channel: systemd reads until EOF and takes
+// The protocol has no error channel. systemd reads until EOF and takes
 // whatever arrived as the value. A failure before the write closes the
 // connection unwritten, which the requesting unit sees as an empty
 // credential.
@@ -163,7 +160,7 @@ func (s *Server) handle(conn net.Conn) {
 		return
 	}
 
-	// The write gets a budget of its own rather than the fetch's leftovers: a
+	// The write gets a deadline of its own rather than the fetch's leftovers. A
 	// deadline that expires part way through hands the requester the bytes
 	// already queued, which it reads as a complete credential.
 	if cur.connTimeout > 0 {

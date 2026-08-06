@@ -152,7 +152,7 @@ path = "p"
 		"kv/p": {"password": nil},
 	}})
 
-	// A present-but-null field must refuse the request: JSON-encoded it would
+	// A present-but-null field must refuse the request. JSON-encoded it would
 	// serve the four bytes "null", which a consumer reads as a real value.
 	_, _, err := r.Resolve(context.Background(), credserver.Request{Unit: "a.service", Credential: "password"})
 	if err == nil || !strings.Contains(err.Error(), "null") {
@@ -246,7 +246,7 @@ path = "apps/{instance}"
 		"kv/apps/":   {"c": "x"},
 	}})
 
-	// The instance name comes from whoever defines the unit: ".." must not
+	// The instance name comes from whoever defines the unit, so ".." must not
 	// escape the rule's path prefix through URL normalization, and an empty
 	// instance must not serve a path the rule never granted.
 	for _, unit := range []string{"foo@...service", "plain.service"} {

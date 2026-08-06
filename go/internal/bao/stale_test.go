@@ -32,7 +32,7 @@ func (f *flakyReader) Read(_ context.Context, _ config.SecretRef) (map[string]an
 var errDown = &url.Error{Op: "Get", URL: "http://bao", Err: errors.New("connection refused")}
 
 // testStaleCache wraps inner with a clock the test advances via the returned
-// pointer. It builds the struct directly: no sweep goroutine runs, so the
+// pointer. It builds the struct directly, so no sweep goroutine runs and the
 // fake clock needs no synchronization.
 func testStaleCache(inner reader, maxAge time.Duration) (*StaleCache, *time.Time) {
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
@@ -159,8 +159,8 @@ func TestStaleCacheAuthoritativeErrorInvalidatesEntry(t *testing.T) {
 	}
 }
 
-// A 403 blamed on the daemon's own token must serve stale and keep the entry:
-// with a static token this is exactly the failure the daemon cannot self-heal,
+// A 403 blamed on the daemon's own token must serve stale and keep the entry.
+// With a static token this is exactly the failure the daemon cannot self-heal,
 // so it is where the fallback matters most.
 func TestStaleCacheServesStaleWhenTheTokenIsRejected(t *testing.T) {
 	inner := &flakyReader{data: map[string]any{"password": "hunter2"}}
@@ -215,7 +215,7 @@ func TestStaleCacheKeysRawAndKVSeparately(t *testing.T) {
 }
 
 // An entry outliving maxAge has to be reclaimed without a reload or a request
-// revisiting it: the sweep is what bounds how long a daemon left alone keeps
+// revisiting it. The sweep is what limits how long a daemon left alone keeps
 // secret material resident.
 func TestStaleCacheSweepsExpiredEntriesInTheBackground(t *testing.T) {
 	defer func(d time.Duration) { sweepInterval = d }(sweepInterval)
