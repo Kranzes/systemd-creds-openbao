@@ -1,0 +1,53 @@
+name: Fuzz
+
+on:
+  schedule:
+    # Weekly, off-peak (UTC).
+    - cron: "23 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    strategy:
+      # A crash in one target must not cancel the other's run.
+      fail-fast: false
+      matrix:
+        include:
+          - target: FuzzParsePeer
+            package: internal/credserver
+          - target: FuzzResolve
+            package: internal/secrets
+    name: ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: NixOS/nix-installer-action@main
+        with:
+          extra-conf: |
+            extra-substituters = https://nix-community.cachix.org
+            extra-trusted-public-keys = nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs=
+      - uses: Mic92/hestia@v3
+        with:
+          upstream-cache-filter: true
+          upstream-cache-key-names: cache.nixos.org-1 nix-community.cachix.org-1
+      # Caches are immutable, so each run saves the grown corpus under a new
+      # key and restores the newest one.
+      - uses: actions/cache@v6
+        with:
+          path: ~/.cache/go-build/fuzz
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
+          restore-keys: fuzz-corpus-${{ matrix.target }}-
+      - name: Run ${{ matrix.target }}
+        # A failure saying "context deadline exceeded" without a crash input
+        # is golang/go#75804, a shutdown race in go1.26 fixed in go1.27.
+        run: nix-shell --run 'cd go && go test -fuzz=${{ matrix.target }} -fuzztime=10m -run "^$" ./${{ matrix.package }}'
+      # A crash is minimized into the package's testdata/fuzz directory.
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: failing-inputs-${{ matrix.target }}
+          path: go/${{ matrix.package }}/testdata/fuzz/
