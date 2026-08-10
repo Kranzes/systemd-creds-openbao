@@ -33,6 +33,9 @@ path = "systemd/{unit_name}"
 	if r.Format != FormatField || r.Field != "{credential}" {
 		t.Errorf("format defaults = %q/%q, want field/{credential}", r.Format, r.Field)
 	}
+	if r.Encoding != EncodingNone {
+		t.Errorf("encoding default = %q, want %q", r.Encoding, EncodingNone)
+	}
 }
 
 func TestParseFull(t *testing.T) {
@@ -212,6 +215,18 @@ func TestParseErrors(t *testing.T) {
 			name: "json format with field",
 			toml: "[[credentials]]\nunit = \"u.service\"\npath = \"p\"\nformat = \"json\"\nfield = \"f\"",
 			want: "field must not be set",
+		},
+		{
+			// The json format serves the whole data map, so there is no
+			// single string value to decode.
+			name: "json format with encoding",
+			toml: "[[credentials]]\nunit = \"u.service\"\npath = \"p\"\nformat = \"json\"\nencoding = \"base64\"",
+			want: "encoding must not be set",
+		},
+		{
+			name: "unknown encoding",
+			toml: "[[credentials]]\nunit = \"u.service\"\npath = \"p\"\nencoding = \"hex\"",
+			want: "unknown encoding",
 		},
 		{
 			name: "bad unit glob",

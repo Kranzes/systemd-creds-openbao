@@ -210,17 +210,20 @@ path = "p"
 	}
 }
 
-func TestResolveBase64Field(t *testing.T) {
+func TestResolveBase64Encoding(t *testing.T) {
+	reader := &fakeReader{kv: map[string]map[string]any{
+		"kv/p": {
+			"blob":   base64.StdEncoding.EncodeToString([]byte{0x00, 0x01, 0xff}),
+			"broken": "!!!not-base64!!!",
+			"count":  3,
+		},
+	}}
 	r := newResolver(t, `
 [[credentials]]
 unit = "*"
 path = "p"
-`, &fakeReader{kv: map[string]map[string]any{
-		"kv/p": {
-			"blob":   "base64:" + base64.StdEncoding.EncodeToString([]byte{0x00, 0x01, 0xff}),
-			"broken": "base64:!!!not-base64!!!",
-		},
-	}})
+encoding = "base64"
+`, reader)
 
 	got, _, err := r.Resolve(context.Background(), credserver.Request{Unit: "a.service", Credential: "blob"})
 	if err != nil {
@@ -233,6 +236,25 @@ path = "p"
 	// Invalid base64 refuses the credential instead of serving mangled bytes.
 	if _, _, err := r.Resolve(context.Background(), credserver.Request{Unit: "a.service", Credential: "broken"}); err == nil {
 		t.Error("Resolve succeeded for invalid base64, want error")
+	}
+
+	// A non-string field holds no base64 text to decode.
+	if _, _, err := r.Resolve(context.Background(), credserver.Request{Unit: "a.service", Credential: "count"}); err == nil {
+		t.Error("Resolve succeeded for a non-string field, want error")
+	}
+
+	// Without the option the same value is served as the text it is.
+	r = newResolver(t, `
+[[credentials]]
+unit = "*"
+path = "p"
+`, reader)
+	got, _, err = r.Resolve(context.Background(), credserver.Request{Unit: "a.service", Credential: "blob"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := base64.StdEncoding.EncodeToString([]byte{0x00, 0x01, 0xff}); string(got) != want {
+		t.Errorf("got %q, want %q", got, want)
 	}
 }
 

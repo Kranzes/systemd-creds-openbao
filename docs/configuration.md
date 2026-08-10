@@ -77,6 +77,7 @@ first match wins. **Requests matching no rule are refused.**
 | `path` | required | Secret path below the mount, or the full API path for `raw` |
 | `format` | `field` | `field` serves one field verbatim. `json` serves all data as JSON |
 | `field` | `{credential}` | Which field of the secret data to serve. Must not be set with `format = "json"` |
+| `encoding` | `none` | `base64` decodes the field value before serving it. Must not be set with `format = "json"` |
 
 The `kv` backend speaks KV v2. A KV v1 mount is read through `backend = "raw"`
 with the full API path.
@@ -86,9 +87,9 @@ does not cross a `/`, and `?` and `[...]` work. `\` escapes the next character, 
 `\xNN` escaping needs `unit = 'dev-disk\\x2d*'` in a TOML literal string, or
 four backslashes in a basic one.
 
-With `format = "field"`, a string prefixed with `base64:` is decoded and served
-as raw bytes, and any non-string field is served JSON-encoded. `format = "json"` serves the data
-map as it comes, `base64:` prefixes included.
+With `format = "field"`, a non-string field is served JSON-encoded. A binary
+credential is stored as base64 text and served decoded with
+`encoding = "base64"`.
 
 ### Placeholders
 

@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"path"
-	"strings"
 
 	"github.com/kranzes/systemd-creds-openbao/go/internal/config"
 	"github.com/kranzes/systemd-creds-openbao/go/internal/credserver"
@@ -76,9 +75,9 @@ func (r *Resolver) Resolve(ctx context.Context, req credserver.Request) ([]byte,
 		// which looks like a real value. Refuse like a missing field instead.
 		return nil, "", fmt.Errorf("secret %q field %q is null", location, field)
 	}
-	out, err := encodeField(value)
+	out, err := encodeField(value, rule.Encoding)
 	if err != nil {
-		return nil, "", err
+		return nil, "", fmt.Errorf("secret %q field %q: %w", location, field, err)
 	}
 	return out, location, nil
 }
@@ -97,24 +96,27 @@ func (r *Resolver) match(req credserver.Request) *config.Credential {
 }
 
 // encodeField turns one field of the secret data into the credential payload.
-// Strings are served verbatim, except that a "base64:" prefix decodes to raw
-// bytes, since JSON has no byte string and credentials may be binary. Any
-// other type is JSON-encoded.
-func encodeField(value any) ([]byte, error) {
+// Strings are served verbatim and any other type is JSON-encoded. With
+// encoding = "base64" the string is decoded to raw bytes instead, since JSON
+// has no byte string and credentials may be binary.
+func encodeField(value any, encoding string) ([]byte, error) {
 	switch v := value.(type) {
 	case string:
-		if enc, ok := strings.CutPrefix(v, "base64:"); ok {
-			data, err := base64.StdEncoding.DecodeString(enc)
+		if encoding == config.EncodingBase64 {
+			data, err := base64.StdEncoding.DecodeString(v)
 			if err != nil {
-				return nil, fmt.Errorf("decoding base64 secret value: %w", err)
+				return nil, fmt.Errorf("decoding base64 value: %w", err)
 			}
 			return data, nil
 		}
 		return []byte(v), nil
 	default:
+		if encoding == config.EncodingBase64 {
+			return nil, fmt.Errorf("value is %T, base64 decoding takes a string", v)
+		}
 		out, err := json.Marshal(v)
 		if err != nil {
-			return nil, fmt.Errorf("encoding field value: %w", err)
+			return nil, fmt.Errorf("encoding value: %w", err)
 		}
 		return out, nil
 	}

@@ -64,6 +64,7 @@ in
               unit = "creds-test.service";
               credential = "binary";
               path = "systemd/{unit_name}";
+              encoding = "base64";
             }
             {
               unit = "creds-test.service";
@@ -160,7 +161,7 @@ in
           machine.succeed("bao secrets enable -version=2 kv")
           machine.succeed(f"bao kv put -mount=kv systemd/prometheus 'web.yml={web_yml(bcrypt('password1'))}'")
           machine.succeed(
-              f"bao kv put -mount=kv systemd/creds-test 'binary=base64:{binary_b64}' fallback=fallback-value"
+              f"bao kv put -mount=kv systemd/creds-test binary={binary_b64} fallback=fallback-value"
           )
 
       with subtest("Prometheus starts with basic auth served from OpenBao"):
@@ -184,12 +185,12 @@ in
           t.assertEqual(machine.succeed("base64 -w0 /tmp/creds/binary").strip(), binary_b64)
           t.assertEqual(
               json.loads(machine.succeed("cat /tmp/creds/json")),
-              {"binary": f"base64:{binary_b64}", "fallback": "fallback-value"},
+              {"binary": binary_b64, "fallback": "fallback-value"},
           )
           # The raw rule's "data" field is a map, so it is served JSON-encoded.
           t.assertEqual(
               json.loads(machine.succeed("cat /tmp/creds/raw")),
-              {"binary": f"base64:{binary_b64}", "fallback": "fallback-value"},
+              {"binary": binary_b64, "fallback": "fallback-value"},
           )
 
       with subtest("Requests matching no rule are refused with an empty credential"):
@@ -238,7 +239,7 @@ in
           t.assertEqual(machine.succeed("base64 -w0 /tmp/creds-scoped/binary").strip(), binary_b64)
           t.assertEqual(
               json.loads(machine.succeed("cat /tmp/creds-scoped/raw")),
-              {"binary": f"base64:{binary_b64}", "fallback": "fallback-value"},
+              {"binary": binary_b64, "fallback": "fallback-value"},
           )
           t.assertIn("deny", machine.succeed(f"bao token capabilities {scoped_token} kv/data/other"))
 

@@ -22,12 +22,12 @@ import (
 // contract is a config that validation has accepted, and validation is part
 // of what is under test.
 func FuzzResolve(f *testing.F) {
-	f.Add("*", "*", "", "", "systemd/{unit_name}", "", "", "myapp.service", "db-password")
-	f.Add("foo@*.service", "*", "", "", "creds/{instance}", "", "", "foo@...service", "x")
-	f.Add("myapp.service", "db-creds", "raw", "", "database/creds/myapp", "json", "", "myapp.service", "db-creds")
-	f.Add("*", "*", "", "m-{prefix}", "{unit}/{credential}", "field", "password", "a@b.service", "count")
+	f.Add("*", "*", "", "", "systemd/{unit_name}", "", "", "", "myapp.service", "db-password")
+	f.Add("foo@*.service", "*", "", "", "creds/{instance}", "", "", "", "foo@...service", "x")
+	f.Add("myapp.service", "db-creds", "raw", "", "database/creds/myapp", "json", "", "", "myapp.service", "db-creds")
+	f.Add("*", "*", "", "m-{prefix}", "{unit}/{credential}", "field", "db-password", "base64", "a@b.service", "count")
 
-	f.Fuzz(func(t *testing.T, unitGlob, credGlob, backend, mount, path, format, field, unit, credential string) {
+	f.Fuzz(func(t *testing.T, unitGlob, credGlob, backend, mount, path, format, field, encoding, unit, credential string) {
 		// ParsePeer never produces an empty or slash-carrying unit or
 		// credential ID. FuzzParsePeer holds it to that.
 		if unit == "" || credential == "" || strings.ContainsRune(unit+credential, '/') {
@@ -45,6 +45,7 @@ func FuzzResolve(f *testing.F) {
 			"path":       path,
 			"format":     format,
 			"field":      field,
+			"encoding":   encoding,
 		}}})
 		if err != nil {
 			t.Skip()
@@ -69,7 +70,7 @@ type checkingReader struct {
 
 var fuzzSecretData = map[string]any{
 	"password":    "hunter2",
-	"db-password": "base64:aHVudGVyMg==",
+	"db-password": "aHVudGVyMg==",
 	"count":       float64(3),
 }
 
