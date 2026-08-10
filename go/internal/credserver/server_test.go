@@ -37,7 +37,8 @@ func serve(t *testing.T, srv *Server) string {
 	t.Helper()
 
 	socket := filepath.Join(t.TempDir(), "sock")
-	l, err := net.Listen("unix", socket)
+	var lc net.ListenConfig
+	l, err := lc.Listen(t.Context(), "unix", socket)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,12 +56,12 @@ func serve(t *testing.T, srv *Server) string {
 
 // fetch connects the way systemd does: from an abstract-namespace socket
 // naming the unit and credential.
-func fetch(t *testing.T, socket, unit, credential string) ([]byte, error) {
+func fetch(t *testing.T, socket, credential string) ([]byte, error) {
 	t.Helper()
 
 	laddr := &net.UnixAddr{
 		Net:  "unix",
-		Name: fmt.Sprintf("@%x/unit/%s/%s", time.Now().UnixNano(), unit, credential),
+		Name: fmt.Sprintf("@%x/unit/foobar.service/%s", time.Now().UnixNano(), credential),
 	}
 	conn, err := net.DialUnix("unix", laddr, &net.UnixAddr{Net: "unix", Name: socket})
 	if err != nil {
@@ -78,7 +79,7 @@ func TestServerServesCredential(t *testing.T) {
 		return []byte(req.Unit + "|" + req.Credential), "test/path", nil
 	}))
 
-	got, err := fetch(t, socket, "foobar.service", "db-password")
+	got, err := fetch(t, socket, "db-password")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,7 +94,7 @@ func TestServerReloadSwapsResolver(t *testing.T) {
 	}))
 	socket := serve(t, srv)
 
-	got, err := fetch(t, socket, "foobar.service", "cred")
+	got, err := fetch(t, socket, "cred")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,7 +106,7 @@ func TestServerReloadSwapsResolver(t *testing.T) {
 		return []byte("after"), "test/path", nil
 	}), 5*time.Second)
 
-	got, err = fetch(t, socket, "foobar.service", "cred")
+	got, err = fetch(t, socket, "cred")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,7 +120,7 @@ func TestServerResolverErrorYieldsNoData(t *testing.T) {
 		return nil, "", errors.New("no such secret")
 	}))
 
-	got, err := fetch(t, socket, "foobar.service", "nope")
+	got, err := fetch(t, socket, "nope")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -139,7 +140,7 @@ func TestServerRejectsNonRootPeer(t *testing.T) {
 		return []byte("secret"), "test/path", nil
 	}), slog.New(slog.NewTextHandler(os.Stderr, nil)), 5*time.Second)
 
-	got, err := fetch(t, serve(t, srv), "foobar.service", "cred")
+	got, err := fetch(t, serve(t, srv), "cred")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -158,8 +159,9 @@ func TestServerRejectsUnboundPeer(t *testing.T) {
 		return []byte("secret"), "test/path", nil
 	}))
 
-	// Plain Dial binds no source address, so the peer has no abstract name.
-	conn, err := net.Dial("unix", socket)
+	// A plain dial binds no source address, so the peer has no abstract name.
+	var d net.Dialer
+	conn, err := d.DialContext(t.Context(), "unix", socket)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -202,19 +204,20 @@ func TestServerStats(t *testing.T) {
 		}
 	}
 
-	if _, err := fetch(t, socket, "foobar.service", "cred"); err != nil {
+	if _, err := fetch(t, socket, "cred"); err != nil {
 		t.Fatal(err)
 	}
 	expect(1, 0)
 
-	if _, err := fetch(t, socket, "foobar.service", "denied"); err != nil {
+	if _, err := fetch(t, socket, "denied"); err != nil {
 		t.Fatal(err)
 	}
 	expect(1, 1)
 
 	// A connection rejected before the protocol even starts is a refusal
 	// too. Every connection lands in exactly one counter.
-	conn, err := net.Dial("unix", socket)
+	var d net.Dialer
+	conn, err := d.DialContext(t.Context(), "unix", socket)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -236,7 +239,7 @@ func TestServerCredentialSizeLimit(t *testing.T) {
 		return make([]byte, CredentialSizeMax+1), "test/path", nil
 	}))
 
-	got, err := fetch(t, socket, "foobar.service", "at-limit")
+	got, err := fetch(t, socket, "at-limit")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -244,7 +247,7 @@ func TestServerCredentialSizeLimit(t *testing.T) {
 		t.Errorf("got %d bytes, want %d", len(got), CredentialSizeMax)
 	}
 
-	got, err = fetch(t, socket, "foobar.service", "oversized")
+	got, err = fetch(t, socket, "oversized")
 	if err != nil {
 		t.Fatal(err)
 	}

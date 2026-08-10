@@ -54,14 +54,14 @@ func fakeBao(t *testing.T) *httptest.Server {
 			},
 		})
 	})
-	mux.HandleFunc("/v1/database/creds/myapp", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/v1/database/creds/myapp", func(w http.ResponseWriter, _ *http.Request) {
 		respond(w, map[string]any{
 			"lease_id":       "database/creds/myapp/abc",
 			"lease_duration": 3600,
 			"data":           map[string]any{"username": "u", "password": "p"},
 		})
 	})
-	mux.HandleFunc("/v1/secret/data/myapp/deleted", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/v1/secret/data/myapp/deleted", func(w http.ResponseWriter, _ *http.Request) {
 		respond(w, map[string]any{
 			"data": map[string]any{
 				"data":     nil,
@@ -69,7 +69,7 @@ func fakeBao(t *testing.T) *httptest.Server {
 			},
 		})
 	})
-	mux.HandleFunc("/v1/auth/token/renew-self", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/v1/auth/token/renew-self", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
 		respond(w, map[string]any{"errors": []string{"lease is not renewable"}})
 	})
@@ -283,16 +283,16 @@ func TestReadRejectsOversizedResponse(t *testing.T) {
 	// has to cut the body off at the transport. The body here stays valid JSON
 	// so that only its size can be what fails the read.
 	mux := http.NewServeMux()
-	mux.HandleFunc("/v1/secret/data/big", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/v1/secret/data/big", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		io.WriteString(w, `{"data":{"data":{"password":"`)
+		_, _ = io.WriteString(w, `{"data":{"data":{"password":"`)
 		chunk := strings.Repeat("a", 1<<20)
 		for n := 0; n <= responseSizeMax; n += len(chunk) {
 			if _, err := io.WriteString(w, chunk); err != nil {
 				return
 			}
 		}
-		io.WriteString(w, `"},"metadata":{"version":1}}}`)
+		_, _ = io.WriteString(w, `"},"metadata":{"version":1}}}`)
 	})
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
@@ -322,7 +322,7 @@ func TestReadRejectsOversizedResponse(t *testing.T) {
 func TestReadRejectsOversizedResponseByContentLength(t *testing.T) {
 	t.Setenv("BAO_MAX_RETRIES", "0")
 	mux := http.NewServeMux()
-	mux.HandleFunc("/v1/secret/data/big", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/v1/secret/data/big", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Content-Length", strconv.Itoa(responseSizeMax+1))
 		w.WriteHeader(http.StatusOK)
@@ -357,10 +357,10 @@ func TestReadForbiddenClassification(t *testing.T) {
 			t.Errorf("encoding response: %v", err)
 		}
 	}
-	mux.HandleFunc("/v1/secret/data/denied", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/v1/secret/data/denied", func(w http.ResponseWriter, _ *http.Request) {
 		forbid(w)
 	})
-	mux.HandleFunc("/v1/auth/token/lookup-self", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/v1/auth/token/lookup-self", func(w http.ResponseWriter, _ *http.Request) {
 		if !tokenValid.Load() {
 			forbid(w)
 			return
@@ -369,7 +369,7 @@ func TestReadForbiddenClassification(t *testing.T) {
 			t.Errorf("encoding response: %v", err)
 		}
 	})
-	mux.HandleFunc("/v1/auth/token/renew-self", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/v1/auth/token/renew-self", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
 		if err := json.NewEncoder(w).Encode(map[string]any{"errors": []string{"lease is not renewable"}}); err != nil {
 			t.Errorf("encoding response: %v", err)
@@ -585,7 +585,7 @@ func TestCertLoginWithoutClientCert(t *testing.T) {
 func TestStaticTokenRenewalProbe(t *testing.T) {
 	probed := make(chan struct{}, 1)
 	mux := http.NewServeMux()
-	mux.HandleFunc("/v1/auth/token/renew-self", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/v1/auth/token/renew-self", func(w http.ResponseWriter, _ *http.Request) {
 		select {
 		case probed <- struct{}{}:
 		default:
@@ -614,7 +614,7 @@ func TestStaticTokenRenewalRetriesTransientFailure(t *testing.T) {
 	renewed := make(chan struct{})
 	mux := http.NewServeMux()
 	t.Setenv("BAO_MAX_RETRIES", "0") // exercise our retry, not the api client's
-	mux.HandleFunc("/v1/auth/token/renew-self", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/v1/auth/token/renew-self", func(w http.ResponseWriter, _ *http.Request) {
 		if attempts.Add(1) == 1 {
 			w.WriteHeader(http.StatusInternalServerError)
 			return
@@ -657,7 +657,7 @@ func TestRenewalResumesAfterTheWatcherFails(t *testing.T) {
 	resumed := make(chan struct{})
 	t.Setenv("BAO_MAX_RETRIES", "0") // exercise our retry, not the api client's
 	mux := http.NewServeMux()
-	mux.HandleFunc("/v1/auth/token/renew-self", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/v1/auth/token/renew-self", func(w http.ResponseWriter, _ *http.Request) {
 		// The probe hands a renewable lease to the watcher, whose own renewal
 		// then fails.
 		if attempts.Add(1) == 2 {
@@ -702,7 +702,7 @@ func TestRenewalResumesAfterTheWatcherFails(t *testing.T) {
 func TestRenewalFailureDoesNotSpinOnRelogin(t *testing.T) {
 	var logins atomic.Int32
 	mux := http.NewServeMux()
-	mux.HandleFunc("/v1/auth/approle/login", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/v1/auth/approle/login", func(w http.ResponseWriter, _ *http.Request) {
 		logins.Add(1)
 		if err := json.NewEncoder(w).Encode(map[string]any{
 			"auth": map[string]any{
@@ -714,7 +714,7 @@ func TestRenewalFailureDoesNotSpinOnRelogin(t *testing.T) {
 			t.Errorf("encoding response: %v", err)
 		}
 	})
-	mux.HandleFunc("/v1/auth/token/renew-self", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/v1/auth/token/renew-self", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
 		if err := json.NewEncoder(w).Encode(map[string]any{"errors": []string{"permission denied"}}); err != nil {
 			t.Errorf("encoding response: %v", err)
@@ -759,7 +759,7 @@ func (b *syncBuffer) String() string {
 func renewSelfLog(t *testing.T, status int, message string) string {
 	t.Helper()
 	mux := http.NewServeMux()
-	mux.HandleFunc("/v1/auth/token/renew-self", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/v1/auth/token/renew-self", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(status)
 		if err := json.NewEncoder(w).Encode(map[string]any{"errors": []string{message}}); err != nil {
 			t.Errorf("encoding response: %v", err)

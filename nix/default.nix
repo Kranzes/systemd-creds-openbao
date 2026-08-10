@@ -11,6 +11,7 @@ rec {
       inputsFrom = [ packages.systemd-creds-openbao ];
       packages = [
         formatter
+        pkgs.golangci-lint
         pkgs.gopls
         pkgs.govulncheck
       ];
@@ -43,6 +44,21 @@ rec {
         fileset = lib.fileset.gitTracked ../.;
       }
     );
+
+    golangci-lint = packages.systemd-creds-openbao.overrideAttrs (old: {
+      pname = old.pname + "-golangci-lint";
+      nativeBuildInputs = old.nativeBuildInputs ++ [ pkgs.golangci-lint ];
+      buildPhase = ''
+        runHook preBuild
+        HOME=$TMPDIR golangci-lint run
+        runHook postBuild
+      '';
+      doCheck = false;
+      installPhase = ''
+        touch $out
+      '';
+      dontFixup = true;
+    });
 
     nixos-test = pkgs.testers.runNixOSTest {
       imports = [ ./test.nix ];

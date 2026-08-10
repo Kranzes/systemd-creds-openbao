@@ -15,6 +15,7 @@ buildGoModule (finalAttrs: {
       (lib.fileset.fileFilter (f: f.hasExt "go") ../go)
       ../go/go.mod
       ../go/go.sum
+      ../go/.golangci.yml
       ../go/contrib/systemd
     ];
   };

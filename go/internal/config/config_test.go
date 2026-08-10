@@ -121,7 +121,7 @@ func TestParseErrors(t *testing.T) {
 	}{
 		{
 			name: "unknown key",
-			toml: "[openbao]\naddres = \"typo\"",
+			toml: "[openbao]\nserve_stale_fo = \"typo\"",
 			want: "unknown configuration keys",
 		},
 		{

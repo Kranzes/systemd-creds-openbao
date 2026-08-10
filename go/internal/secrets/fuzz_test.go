@@ -56,7 +56,7 @@ func FuzzResolve(f *testing.F) {
 		}
 
 		r := NewResolver(cfg.Credentials, &checkingReader{t: t, policy: policyPaths(cfg.Credentials)})
-		r.Resolve(context.Background(), credserver.Request{Unit: unit, Credential: credential})
+		_, _, _ = r.Resolve(context.Background(), credserver.Request{Unit: unit, Credential: credential})
 	})
 }
 

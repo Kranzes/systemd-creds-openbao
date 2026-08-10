@@ -27,7 +27,7 @@ func (t *limitTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		return nil, err
 	}
 	if resp.ContentLength > t.limit {
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		return nil, &responseTooLargeError{size: resp.ContentLength, limit: t.limit}
 	}
 	// One byte of slack, so a body of exactly the limit still reads to EOF.
