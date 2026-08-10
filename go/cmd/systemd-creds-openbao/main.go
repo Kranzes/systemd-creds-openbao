@@ -231,7 +231,7 @@ type service struct {
 func (s *service) reload(ctx context.Context) {
 	// The next READY=1 ends the reload, success or not. A reload blocks the
 	// loop's watchdog ticks for up to reloadTimeout, so both of its edges
-	// reset the watchdog instead: here and in notifyReady.
+	// reset the watchdog instead, here and in notifyReady.
 	notify(s.log, daemon.SdNotifyReloading+"\n"+daemon.SdNotifyMonotonicUsec()+"\n"+daemon.SdNotifyWatchdog)
 	defer s.notifyReady()
 

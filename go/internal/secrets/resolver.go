@@ -30,8 +30,8 @@ func NewResolver(rules []config.Credential, reader Reader) *Resolver {
 	return &Resolver{rules: rules, reader: reader}
 }
 
-// Plan is the part of a resolution that happens before OpenBao is contacted:
-// which rule matched and the read it expands to. The -resolve flag prints
+// Plan is the part of a resolution that happens before OpenBao is contacted,
+// the rule that matched and the read it expands to. The -resolve flag prints
 // one, so the CLI and the socket refuse a request the same way.
 type Plan struct {
 	// RuleIndex counts [[credentials]] tables in file order, the first is 1.
