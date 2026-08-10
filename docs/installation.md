@@ -1,5 +1,7 @@
 # Installation
 
+The host needs systemd 260 or newer.
+
 systemd owns the `AF_UNIX` socket and starts the daemon on the first request,
 so what gets enabled is the socket unit, not the service. The identity the daemon authenticates as needs an OpenBao
 policy covering the configured rules, which
