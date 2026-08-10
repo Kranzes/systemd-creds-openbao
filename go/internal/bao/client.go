@@ -433,6 +433,24 @@ func (c *Client) manageTokenLifecycle(ctx context.Context, secret *api.Secret, c
 	}
 }
 
+// RevokeTimeout is how long a revocation request may take, so a hung OpenBao
+// cannot block the caller.
+const RevokeTimeout = 5 * time.Second
+
+// RevokeSelf revokes the token the client holds, for a client a reload or
+// shutdown abandons. A token from token_file belongs to the operator and is
+// left alone. Best effort, an unrevoked token still dies at its TTL.
+func (c *Client) RevokeSelf(ctx context.Context) {
+	if c.auth.Method == config.AuthToken {
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, RevokeTimeout)
+	defer cancel()
+	if err := c.api.Auth().Token().RevokeSelfWithContext(ctx, ""); err != nil {
+		c.log.Warn("failed to revoke the abandoned OpenBao token", "ERROR", err)
+	}
+}
+
 // renewUntilExpiry blocks while the token is being renewed and returns when it
 // cannot be renewed any further, or when ctx is canceled.
 func (c *Client) renewUntilExpiry(ctx context.Context, secret *api.Secret) error {

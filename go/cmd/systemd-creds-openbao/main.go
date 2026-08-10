@@ -170,9 +170,15 @@ func run() int {
 		srv:        srv,
 		cache:      cache,
 		cfg:        cfg,
+		client:     client,
 		stopClient: stopClient,
 	}
-	defer func() { svc.stopClient() }()
+	defer func() {
+		svc.stopClient()
+		// Shutdown cuts in-flight requests off anyway, so the token can go
+		// right away instead of staying live until its TTL.
+		svc.client.RevokeSelf(context.WithoutCancel(ctx))
+	}()
 
 	serveClosed := make(chan struct{}, len(listeners))
 	for _, l := range listeners {
@@ -221,6 +227,7 @@ type service struct {
 	cache      *bao.StaleCache
 
 	cfg        *config.Config
+	client     *bao.Client
 	stopClient context.CancelFunc
 }
 
@@ -268,7 +275,19 @@ func (s *service) reload(ctx context.Context) {
 	s.cache.Swap(client, cfg.OpenBao.ServeStaleFor)
 	s.srv.Reload(secrets.NewResolver(cfg.Credentials, s.cache), cfg.Server.ConnectionTimeout)
 	s.stopClient()
-	s.stopClient, s.cfg = stopClient, cfg
+	// The old token stays valid until every request that can still hold the
+	// old client has finished, then it is revoked rather than left live
+	// until its TTL. The wait adds the ProbeTimeout that a last-moment 403
+	// may still spend on its token check. With no connection
+	// timeout nothing stops those requests, and the token is left to expire
+	// on its own.
+	if old, timeout := s.client, s.cfg.Server.ConnectionTimeout; timeout > 0 {
+		revokeCtx := context.WithoutCancel(ctx)
+		time.AfterFunc(timeout+bao.ProbeTimeout, func() {
+			old.RevokeSelf(revokeCtx)
+		})
+	}
+	s.client, s.stopClient, s.cfg = client, stopClient, cfg
 	s.log.Info("configuration reloaded", "RULES", len(cfg.Credentials))
 }
 
