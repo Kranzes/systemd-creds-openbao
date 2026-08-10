@@ -172,8 +172,42 @@ func Replacer(values map[string]string) *strings.Replacer {
 	return strings.NewReplacer(pairs...)
 }
 
+// MatchGlob is path.Match with the backslash matched literally instead of
+// escaping the next character. Unit names carry systemd's \xNN escaping, so
+// with path.Match's own syntax the natural spelling of such a name would
+// silently match a different unit and never the real one. Unit names never
+// need the escape, systemd escapes metacharacters as \xNN before they can
+// appear in one. A name with a literal [ is matched by [[].
+func MatchGlob(pattern, name string) (bool, error) {
+	return path.Match(strings.ReplaceAll(pattern, `\`, `\\`), name)
+}
+
+// checkGlobBackslash rejects the backslash spellings whose meaning shifted
+// when MatchGlob made the backslash literal. A doubled backslash was the old
+// escape for one and now matches two, which no unit name or credential ID
+// contains. Inside a character class the backslash used to escape the next
+// character and now lands as a set member or range endpoint, which can widen
+// what the rule matches.
+func checkGlobBackslash(what, glob string) error {
+	if strings.Contains(glob, `\\`) {
+		return fmt.Errorf("%s: glob %q matches two backslashes in a row, write the backslash once", what, glob)
+	}
+	inClass := false
+	for _, r := range glob {
+		switch {
+		case r == '[':
+			inClass = true
+		case r == ']':
+			inClass = false
+		case r == '\\' && inClass:
+			return fmt.Errorf("%s: glob %q has a backslash inside [...], spell the class without it", what, glob)
+		}
+	}
+	return nil
+}
+
 func isLiteralGlob(glob string) bool {
-	return !strings.ContainsAny(glob, `*?[\`)
+	return !strings.ContainsAny(glob, "*?[")
 }
 
 // Credential maps requests to a secret in OpenBao. Rules are evaluated in file
@@ -390,11 +424,17 @@ func (r *Credential) validate() error {
 	if r.Unit == "" {
 		return fmt.Errorf("unit is required (granting every unit takes an explicit \"*\")")
 	}
-	if _, err := path.Match(r.Unit, "probe"); err != nil {
+	if _, err := MatchGlob(r.Unit, "probe"); err != nil {
 		return fmt.Errorf("unit: invalid glob %q", r.Unit)
 	}
-	if _, err := path.Match(r.Credential, "probe"); err != nil {
+	if err := checkGlobBackslash("unit", r.Unit); err != nil {
+		return err
+	}
+	if _, err := MatchGlob(r.Credential, "probe"); err != nil {
 		return fmt.Errorf("credential: invalid glob %q", r.Credential)
+	}
+	if err := checkGlobBackslash("credential", r.Credential); err != nil {
+		return err
 	}
 
 	switch r.Backend {

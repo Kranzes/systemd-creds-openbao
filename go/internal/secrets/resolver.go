@@ -7,7 +7,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"path"
 
 	"github.com/kranzes/systemd-creds-openbao/go/internal/config"
 	"github.com/kranzes/systemd-creds-openbao/go/internal/credserver"
@@ -112,8 +111,8 @@ func (r *Resolver) match(req credserver.Request) (*config.Credential, int) {
 	for i := range r.rules {
 		rule := &r.rules[i]
 		// Patterns are validated at config load, so Match cannot fail here.
-		unitOK, _ := path.Match(rule.Unit, req.Unit)
-		credOK, _ := path.Match(rule.Credential, req.Credential)
+		unitOK, _ := config.MatchGlob(rule.Unit, req.Unit)
+		credOK, _ := config.MatchGlob(rule.Credential, req.Credential)
 		if unitOK && credOK {
 			return rule, i
 		}

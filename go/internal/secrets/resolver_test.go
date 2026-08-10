@@ -82,6 +82,27 @@ path = "systemd/{unit_name}"
 	}
 }
 
+// A rule naming a systemd-escaped unit spelled naturally must serve that
+// unit's requests.
+func TestResolveEscapedUnitName(t *testing.T) {
+	r := newResolver(t, `
+[[credentials]]
+unit = 'home-my\x2ddata.mount'
+path = "p"
+field = "value"
+`, &fakeReader{kv: map[string]map[string]any{
+		"kv/p": {"value": "hunter2"},
+	}})
+
+	got, _, err := r.Resolve(context.Background(), credserver.Request{Unit: `home-my\x2ddata.mount`, Credential: "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "hunter2" {
+		t.Errorf("got %q, want %q", got, "hunter2")
+	}
+}
+
 func TestResolveFirstMatchWins(t *testing.T) {
 	r := newResolver(t, `
 [[credentials]]

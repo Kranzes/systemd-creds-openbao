@@ -234,6 +234,21 @@ func TestParseErrors(t *testing.T) {
 			want: "invalid glob",
 		},
 		{
+			// The old escape syntax doubled the backslash. Matched literally
+			// it means two in a row, which no unit name contains.
+			name: "unit glob with a doubled backslash",
+			toml: "[[credentials]]\nunit = 'dev-disk\\\\x2d*'\npath = \"p\"",
+			want: "two backslashes",
+		},
+		{
+			// Under the old escape syntax this class held {a, -, z}. Matched
+			// literally the backslash becomes a range endpoint and the rule
+			// widens to units the operator never listed.
+			name: "unit glob with a backslash inside a class",
+			toml: "[[credentials]]\nunit = '[a\\-z]x.service'\npath = \"p\"",
+			want: "inside [...]",
+		},
+		{
 			name: "bad duration",
 			toml: "[server]\nconnection_timeout = \"fast\"",
 			want: "duration",
@@ -384,6 +399,38 @@ func TestParseAllowsAFreePlaceholderTheGlobsLeaveWild(t *testing.T) {
 	// the wildcard the placeholder already asks for rather than the glob's "+".
 	if _, err := Parse([]byte("[[credentials]]\nunit = \"u.service\"\ncredential = \"+*\"\npath = \"apps/{credential}\"")); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// The backslash in a systemd-escaped unit name is matched literally, so the
+// natural TOML spelling of the name matches the unit it names.
+func TestMatchGlobTreatsBackslashLiterally(t *testing.T) {
+	ok, err := MatchGlob(`home-my\x2ddata.mount`, `home-my\x2ddata.mount`)
+	if err != nil || !ok {
+		t.Errorf("MatchGlob = %v, %v, want a literal match", ok, err)
+	}
+	if ok, _ := MatchGlob(`home-my\x2ddata.mount`, "home-myx2ddata.mount"); ok {
+		t.Error("the backslash was consumed as an escape")
+	}
+	if ok, _ := MatchGlob(`home-*.mount`, `home-my\x2ddata.mount`); !ok {
+		t.Error("a wildcard does not match across a backslash")
+	}
+}
+
+// A class that carries no backslash stays valid next to one, escaped unit
+// names and character classes only clash within the brackets.
+func TestParseAllowsAClassBesideABackslash(t *testing.T) {
+	if _, err := Parse([]byte("[[credentials]]\nunit = 'dev-disk\\x2d[ab].mount'\npath = \"p\"")); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A glob whose only special character is a backslash matches exactly one
+// name, so it pins its placeholders like any other literal.
+func TestPinnedValuesTreatsBackslashAsLiteral(t *testing.T) {
+	unit := `home-my\x2ddata.mount`
+	if got := PinnedValues(unit, "*")["{unit}"]; got != unit {
+		t.Errorf("PinnedValues[{unit}] = %q, want %q", got, unit)
 	}
 }
 

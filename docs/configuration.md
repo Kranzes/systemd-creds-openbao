@@ -86,9 +86,10 @@ The `kv` backend speaks KV v2. A KV v1 mount is read through `backend = "raw"`
 with the full API path.
 
 Globs are Go's [`path.Match`](https://pkg.go.dev/path#Match) patterns, so `*`
-does not cross a `/`, and `?` and `[...]` work. `\` escapes the next character, so a unit name carrying systemd's
-`\xNN` escaping needs `unit = 'dev-disk\\x2d*'` in a TOML literal string, or
-four backslashes in a basic one.
+does not cross a `/`, and `?` and `[...]` work. `\` is matched literally, so
+a unit name carrying systemd's `\xNN` escaping is written as it appears,
+`unit = 'dev-disk\x2d*'` in a TOML literal string. `[` always opens a class,
+a name with a literal `[` is matched by `[[]`.
 
 With `format = "field"`, a non-string field is served JSON-encoded. A binary
 credential is stored as base64 text and served decoded with
