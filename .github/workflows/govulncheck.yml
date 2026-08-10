@@ -5,6 +5,8 @@ on:
     # Weekly, off-peak (UTC).
     - cron: "23 4 * * 1"
   pull_request:
+    paths:
+      - go/**
   workflow_dispatch:
 
 concurrency:
