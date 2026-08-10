@@ -12,6 +12,7 @@ rec {
       packages = [
         formatter
         pkgs.gopls
+        pkgs.govulncheck
       ];
     };
   };

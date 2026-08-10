@@ -1,0 +1,27 @@
+name: govulncheck
+
+on:
+  schedule:
+    # Weekly, off-peak (UTC).
+    - cron: "23 4 * * 1"
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: NixOS/nix-installer-action@main
+        with:
+          extra-conf: |
+            extra-substituters = https://nix-community.cachix.org
+            extra-trusted-public-keys = nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs=
+      - uses: Mic92/hestia@v3
+        with:
+          upstream-cache-filter: true
+          upstream-cache-key-names: cache.nixos.org-1 nix-community.cachix.org-1
+      - run: nix-shell --run 'cd go && govulncheck ./...'
