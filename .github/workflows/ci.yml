@@ -58,3 +58,10 @@ jobs:
       - run: nix build -f . '${{ matrix.derivation.attr }}' -L
         if: ${{ !matrix.derivation.isCached }}
 
+  result:
+    needs: build
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - run: '[[ "${{ needs.build.result }}" == "success" ]]'
+
