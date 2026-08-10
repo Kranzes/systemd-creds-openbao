@@ -11,6 +11,8 @@ Usage of systemd-creds-openbao:
     	log level: debug, info, warn, or error (default "info")
   -print-policy
     	print an OpenBao policy covering the configured rules
+  -resolve
+    	print which rule and secret serve a request (usage: -resolve UNIT CREDENTIAL)
   -version
     	print the version
 ```
@@ -26,7 +28,7 @@ Prints out an OpenBao policy granting read access to every path the
 [`[[credentials]]`](configuration.md#credentials) rules can resolve to:
 
 ```console
-$ systemd-creds-openbao -config /etc/systemd-creds-openbao/config.toml -print-policy > policy.hcl
+$ systemd-creds-openbao -print-policy > policy.hcl
 $ bao policy write systemd-creds-openbao policy.hcl
 $ bao token create -policy=systemd-creds-openbao
 ```
@@ -51,3 +53,16 @@ The only capability granted is `read`.
 
 On NixOS the same policy is exposed as the read-only `policyFile` option, see
 [Installation](installation.md#nixos).
+
+## `-resolve`
+
+Answers which rule serves a request and what it reads, without contacting
+OpenBao. The requesting unit and the credential ID follow as arguments:
+
+```console
+$ systemd-creds-openbao -resolve worker@a.service db-password
+rule 1 (unit = "worker@*.service", credential = "*") reads "kv/app/worker/a" field "db-password"
+```
+
+A refused request prints the reason and exits 1. The secret itself is not
+read, so a missing secret or field still surfaces only at request time.

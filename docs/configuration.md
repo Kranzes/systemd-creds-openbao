@@ -67,6 +67,7 @@ rotate `token_file` and reload before it does.
 
 Each rule maps requests to a secret. Rules are tried in file order and the
 first match wins. **Requests matching no rule are refused.**
+[`-resolve`](cli.md#-resolve) answers which rule a given request hits.
 
 | Key | Default | Description |
 | --- | --- | --- |

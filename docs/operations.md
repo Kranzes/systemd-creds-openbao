@@ -34,6 +34,9 @@ $ journalctl -u systemd-creds-openbao SECRET_PATH=kv/myapp/database
 `SECRET_PATH` is the path `bao kv get` (for `kv`) or `bao read` (for `raw`)
 takes, not the `kv/data/...` form the policy uses.
 
+[`-resolve`](cli.md#-resolve) shows which rule a request maps to and the
+path it reads, without triggering one.
+
 ### Serving stale
 
 Secrets remembered for [`serve_stale_for`](configuration.md#openbao) survive

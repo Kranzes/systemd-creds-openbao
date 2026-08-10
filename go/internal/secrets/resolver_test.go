@@ -290,3 +290,63 @@ path = "p"
 	}
 }
 
+func TestPlan(t *testing.T) {
+	// The nil reader proves a plan never contacts OpenBao.
+	r := newResolver(t, `
+[[credentials]]
+unit = "other.service"
+path = "other"
+
+[[credentials]]
+unit = "worker@*.service"
+path = "app/{prefix}/{instance}"
+`, nil)
+
+	plan, err := r.Plan(credserver.Request{Unit: "worker@a.service", Credential: "db-password"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.RuleIndex != 2 {
+		t.Errorf("RuleIndex = %d, want 2", plan.RuleIndex)
+	}
+	if got, want := plan.Ref.Location(), "kv/app/worker/a"; got != want {
+		t.Errorf("location = %q, want %q", got, want)
+	}
+	if got, want := plan.Field, "db-password"; got != want {
+		t.Errorf("field = %q, want %q", got, want)
+	}
+}
+
+func TestPlanJSONFormatHasNoField(t *testing.T) {
+	r := newResolver(t, `
+[[credentials]]
+unit = "myapp.service"
+backend = "raw"
+path = "database/creds/myapp"
+format = "json"
+`, nil)
+
+	plan, err := r.Plan(credserver.Request{Unit: "myapp.service", Credential: "db-creds"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := plan.Ref.Location(), "database/creds/myapp"; got != want {
+		t.Errorf("location = %q, want %q", got, want)
+	}
+	if plan.Field != "" {
+		t.Errorf("field = %q, want empty", plan.Field)
+	}
+}
+
+func TestPlanNoMatchIsRefused(t *testing.T) {
+	r := newResolver(t, `
+[[credentials]]
+unit = "myapp.service"
+path = "myapp/db"
+`, nil)
+
+	_, err := r.Plan(credserver.Request{Unit: "intruder.service", Credential: "db-password"})
+	if err == nil || !strings.Contains(err.Error(), "no credential rule matches") {
+		t.Errorf("err = %v, want no-match refusal", err)
+	}
+}

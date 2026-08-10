@@ -44,11 +44,17 @@ func run() int {
 		checkOnly   = flag.Bool("check", false, "validate the configuration")
 		printPolicy = flag.Bool("print-policy", false, "print an OpenBao policy covering the configured rules")
 		logLevel    = flag.String("log-level", "info", "log level: debug, info, warn, or error")
+		resolveReq  = flag.Bool("resolve", false, "print which rule and secret serve a request (usage: -resolve UNIT CREDENTIAL)")
 		showVersion = flag.Bool("version", false, "print the version")
 	)
 	flag.Parse()
 
-	if flag.NArg() > 0 {
+	if *resolveReq {
+		if flag.NArg() != 2 {
+			fmt.Fprintln(os.Stderr, "-resolve takes exactly two arguments: UNIT CREDENTIAL")
+			return 2
+		}
+	} else if flag.NArg() > 0 {
 		fmt.Fprintf(os.Stderr, "unexpected argument %q (the configuration file is set with -config)\n", flag.Arg(0))
 		return 2
 	}
@@ -78,6 +84,16 @@ func run() int {
 			return 1
 		}
 		fmt.Print(policy.Generate(cfg.Credentials))
+		return 0
+	}
+	if *resolveReq {
+		req := credserver.Request{Unit: flag.Arg(0), Credential: flag.Arg(1)}
+		plan, err := secrets.NewResolver(cfg.Credentials, nil).Plan(req)
+		if err != nil {
+			log.Error("request refused", "ERROR", err)
+			return 1
+		}
+		fmt.Println(describePlan(plan))
 		return 0
 	}
 	if *checkOnly {
@@ -254,6 +270,21 @@ func watchdogTicks(log *slog.Logger) <-chan time.Time {
 func notify(log *slog.Logger, state string) {
 	if _, err := daemon.SdNotify(false, state); err != nil {
 		log.Warn("failed to notify the service manager", "ERROR", err)
+	}
+}
+
+// describePlan renders a resolution for -resolve. The location is what the
+// journal's SECRET_PATH field carries for the same request.
+func describePlan(p secrets.Plan) string {
+	head := fmt.Sprintf("rule %d (unit = %q, credential = %q) reads %q",
+		p.RuleIndex, p.Rule.Unit, p.Rule.Credential, p.Ref.Location())
+	switch {
+	case p.Rule.Format == config.FormatJSON:
+		return head + ", all fields as JSON"
+	case p.Rule.Encoding == config.EncodingBase64:
+		return fmt.Sprintf("%s field %q, base64-decoded", head, p.Field)
+	default:
+		return fmt.Sprintf("%s field %q", head, p.Field)
 	}
 }
 
