@@ -11,6 +11,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"syscall"
 	"time"
 
@@ -26,8 +27,36 @@ import (
 	"github.com/kranzes/systemd-creds-openbao/go/internal/secrets"
 )
 
-// version is set at build time via -ldflags "-X main.version=...".
-var version = "dev"
+// version is set at build time via -ldflags "-X main.version=...". Builds
+// without the injection report what the toolchain stamped instead. For
+// `go install module@version` that is the module version, for a checkout
+// build the commit, since tag stamping skips modules in a subdirectory.
+var version string
+
+func resolvedVersion() string {
+	if version != "" {
+		return version
+	}
+	bi, ok := debug.ReadBuildInfo()
+	if !ok {
+		return "unknown"
+	}
+	rev, dirty := "", ""
+	for _, s := range bi.Settings {
+		switch s.Key {
+		case "vcs.revision":
+			rev = s.Value
+		case "vcs.modified":
+			if s.Value == "true" {
+				dirty = "-dirty"
+			}
+		}
+	}
+	if bi.Main.Version == "(devel)" && rev != "" {
+		return rev[:min(12, len(rev))] + dirty
+	}
+	return bi.Main.Version
+}
 
 // reloadTimeout limits the OpenBao login a reload performs. The manager blocks
 // on the READY=1 that ends a reload, so without it an OpenBao outage would
@@ -60,7 +89,7 @@ func run() int {
 	}
 
 	if *showVersion {
-		fmt.Println("systemd-creds-openbao", version)
+		fmt.Println("systemd-creds-openbao", resolvedVersion())
 		return 0
 	}
 
