@@ -263,12 +263,15 @@ func (c *Client) login(ctx context.Context) (*api.Secret, error) {
 		err  error
 	)
 	switch c.auth.Method {
+	case config.AuthAppRole:
+		data, err = c.appRoleLogin()
 	case config.AuthCert:
 		data, err = c.certLogin()
 	case config.AuthJWT:
 		data, err = c.jwtLogin()
 	default:
-		data, err = c.appRoleLogin()
+		// Unreachable, config validation rejects unknown methods.
+		return nil, fmt.Errorf("unknown auth method %q", c.auth.Method)
 	}
 	if err != nil {
 		return nil, err
