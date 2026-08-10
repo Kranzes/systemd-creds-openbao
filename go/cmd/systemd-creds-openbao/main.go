@@ -78,6 +78,11 @@ func run() int {
 	)
 	flag.Parse()
 
+	if *showVersion {
+		fmt.Println("systemd-creds-openbao", resolvedVersion())
+		return 0
+	}
+
 	if *resolveReq {
 		if flag.NArg() != 2 {
 			fmt.Fprintln(os.Stderr, "-resolve takes exactly two arguments: UNIT CREDENTIAL")
@@ -86,11 +91,6 @@ func run() int {
 	} else if flag.NArg() > 0 {
 		fmt.Fprintf(os.Stderr, "unexpected argument %q (the configuration file is set with -config)\n", flag.Arg(0))
 		return 2
-	}
-
-	if *showVersion {
-		fmt.Println("systemd-creds-openbao", resolvedVersion())
-		return 0
 	}
 
 	var level slog.Level
