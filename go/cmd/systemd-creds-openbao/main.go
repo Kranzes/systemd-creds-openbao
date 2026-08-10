@@ -323,6 +323,14 @@ func watchdogTicks(log *slog.Logger) <-chan time.Time {
 	if interval == 0 {
 		return nil
 	}
+	// A reload blocks the loop feeding the watchdog while it logs in for up
+	// to reloadTimeout and may spend RevokeTimeout more discarding a login
+	// the race threw away, pinging only at the edges. An interval inside
+	// that time gets the daemon killed mid-reload.
+	if limit := reloadTimeout + bao.RevokeTimeout; interval <= limit {
+		log.Warn("WatchdogSec= is not above what a slow reload can take, which trips the watchdog",
+			"WATCHDOG_SEC", interval, "RELOAD_LIMIT", limit)
+	}
 	return time.Tick(interval / 2)
 }
 
