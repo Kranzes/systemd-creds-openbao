@@ -143,11 +143,17 @@ func run() int {
 	svc.notifyReady()
 	defer notify(log, daemon.SdNotifyStopping)
 
+	// Pinging from this loop makes the watchdog prove the loop handling
+	// reloads and signals is alive, not just the process.
+	watchdog := watchdogTicks(log)
+
 	for {
 		select {
 		case <-ctx.Done():
 			log.Info("shutting down on signal")
 			return 0
+		case <-watchdog:
+			notify(log, daemon.SdNotifyWatchdog)
 		case <-serveClosed:
 			// Nothing in the daemon closes a listener. The sockets are
 			// systemd's. Whatever did leaves requests queueing unanswered,
@@ -178,8 +184,10 @@ type service struct {
 // A reload that cannot be completed is abandoned, leaving the previous
 // configuration serving.
 func (s *service) reload(ctx context.Context) {
-	// The next READY=1 ends the reload, success or not.
-	notify(s.log, daemon.SdNotifyReloading+"\n"+daemon.SdNotifyMonotonicUsec())
+	// The next READY=1 ends the reload, success or not. A reload blocks the
+	// loop's watchdog ticks for up to reloadTimeout, so both of its edges
+	// reset the watchdog instead: here and in notifyReady.
+	notify(s.log, daemon.SdNotifyReloading+"\n"+daemon.SdNotifyMonotonicUsec()+"\n"+daemon.SdNotifyWatchdog)
 	defer s.notifyReady()
 
 	s.log.Info("reloading configuration", "PATH", s.configPath)
@@ -221,9 +229,24 @@ func (s *service) status() string {
 		len(s.cfg.Credentials), s.cfg.OpenBao.Auth.Method, served, refused)
 }
 
-// notifyReady reports readiness along with the status summary.
+// notifyReady reports readiness along with the status summary. The watchdog
+// reset makes it the closing edge of a reload.
 func (s *service) notifyReady() {
-	notify(s.log, daemon.SdNotifyReady+"\n"+s.status())
+	notify(s.log, daemon.SdNotifyReady+"\n"+s.status()+"\n"+daemon.SdNotifyWatchdog)
+}
+
+// watchdogTicks returns ticks at half the WatchdogSec= interval the service
+// manager configured, or a nil channel, never ready, when it set none.
+func watchdogTicks(log *slog.Logger) <-chan time.Time {
+	interval, err := daemon.SdWatchdogEnabled(false)
+	if err != nil {
+		log.Warn("cannot read the watchdog configuration", "ERROR", err)
+		return nil
+	}
+	if interval == 0 {
+		return nil
+	}
+	return time.Tick(interval / 2)
 }
 
 // notify sends a state update to the service manager. It does nothing when

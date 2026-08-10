@@ -18,6 +18,10 @@ RestartSec=2s
 # rotated token file is what it re-authenticates with.
 RefreshOnReload=credentials
 
+# A reload pings the watchdog only at its start and end, up to 30 seconds
+# apart, so this must stay above 30s.
+WatchdogSec=1min
+
 DynamicUser=yes
 
 ConfigurationDirectory=systemd-creds-openbao
