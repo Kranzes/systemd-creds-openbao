@@ -15,13 +15,13 @@ type reader interface {
 	Read(ctx context.Context, ref config.SecretRef) (map[string]any, error)
 }
 
-// StaleCache decorates Client with a fallback for OpenBao outages: it
+// StaleCache decorates Client with a fallback for OpenBao outages. It
 // remembers the last successful response per secret and serves it when a
 // fresh read fails with a transient error, so a service can still start
 // while OpenBao is unreachable. No fresh read is ever skipped, and an
 // authoritative refusal (permission denied, missing secret) is returned
-// as-is; only errors OpenBao never got to answer fall back. It implements
-// secrets.Reader and is safe for concurrent use.
+// as-is. The fallback only covers errors OpenBao never got to answer. It
+// implements secrets.Reader and is safe for concurrent use.
 type StaleCache struct {
 	log *slog.Logger
 	now func() time.Time
@@ -38,11 +38,11 @@ type entry struct {
 }
 
 // sweepInterval is how often expired entries are reclaimed in the background.
-// It bounds how long an entry that can no longer be served keeps secret
-// material in memory past maxAge. A variable so tests can shorten it.
+// An entry that can no longer be served keeps secret material in memory for
+// at most this long past maxAge. A variable so tests can shorten it.
 var sweepInterval = time.Minute
 
-// NewStaleCache wraps inner, serving stale responses up to maxAge old; zero
+// NewStaleCache wraps inner, serving stale responses up to maxAge old. Zero
 // disables the fallback and retains nothing. Expired entries are reclaimed in
 // the background until ctx is canceled.
 func NewStaleCache(ctx context.Context, inner reader, maxAge time.Duration, log *slog.Logger) *StaleCache {
@@ -60,7 +60,7 @@ func NewStaleCache(ctx context.Context, inner reader, maxAge time.Duration, log 
 // sweepLoop reclaims expired entries until ctx is canceled. Read only ever
 // revisits the ref in front of it, so without the sweep a secret read once
 // and never again would stay resident for the daemon's lifetime, and rules
-// serving per-instance paths would grow the map without bound.
+// serving per-instance paths would keep growing the map.
 func (s *StaleCache) sweepLoop(ctx context.Context) {
 	t := time.NewTicker(sweepInterval)
 	defer t.Stop()
@@ -84,9 +84,9 @@ func (s *StaleCache) removeExpired() {
 	})
 }
 
-// Swap installs the client and staleness bound a reload produced. Entries
+// Swap installs the client and max age a reload produced. Entries
 // carry over, so a reload during an outage keeps the fallback. Disabling
-// drops them: secret material is only retained while it can be served.
+// drops them, since secret material is only retained while it can be served.
 func (s *StaleCache) Swap(inner reader, maxAge time.Duration) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -96,7 +96,7 @@ func (s *StaleCache) Swap(inner reader, maxAge time.Duration) {
 		clear(s.entries)
 		return
 	}
-	// A bound the reload shrank takes effect now rather than at the next sweep.
+	// A max age the reload shrank takes effect now rather than at the next sweep.
 	s.removeExpired()
 }
 
@@ -118,7 +118,7 @@ func (s *StaleCache) Read(ctx context.Context, key config.SecretRef) (map[string
 		return data, nil
 	}
 	if !retryable(err) {
-		// An authoritative answer supersedes the remembered response: a
+		// An authoritative answer supersedes the remembered response. A
 		// secret OpenBao revoked or deleted must not resurface during a
 		// later outage.
 		delete(s.entries, key)
@@ -132,7 +132,7 @@ func (s *StaleCache) Read(ctx context.Context, key config.SecretRef) (map[string
 		s.log.Warn("read failed, serving stale secret data", "SECRET_PATH", key.Location(), "AGE", age, "ERROR", err)
 		return e.data, nil
 	}
-	// Past the bound the entry can never be served again, so it must not
+	// Past maxAge the entry can never be served again, so it must not
 	// linger in memory.
 	delete(s.entries, key)
 	return nil, err

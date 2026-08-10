@@ -1,6 +1,6 @@
 // Package policy renders a credential rule list as the OpenBao policy the
 // daemon's own token needs to serve those rules. A placeholder whose value the
-// rule's globs pin is written out literally; one that is still free costs a
+// rule's globs pin is written out literally. One that is still free becomes a
 // single-segment wildcard, which is the only way the policy grants more than
 // the rules reach.
 package policy
@@ -16,7 +16,7 @@ import (
 const header = `# OpenBao policy for systemd-creds-openbao, generated with -print-policy.
 # A placeholder the rule's globs leave free becomes "+", OpenBao's
 # single-segment wildcard. See
-# https://github.com/kranzes/systemd-creds-openbao#the-daemons-own-policy
+# https://github.com/kranzes/systemd-creds-openbao/blob/master/docs/cli.md#-print-policy
 `
 
 // Grant is one path the generated policy allows the daemon's token to read.
@@ -29,7 +29,7 @@ type Grant struct {
 }
 
 // Grants returns the paths rules need, deduplicated, in the order the rules
-// first ask for them. Generate renders these; callers that want to reason about
+// first ask for them. Generate renders these. Callers that want to reason about
 // what the policy allows should read them rather than parse the HCL.
 func Grants(rules []config.Credential) []Grant {
 	at := map[string]int{}
@@ -53,7 +53,7 @@ func Generate(rules []config.Credential) string {
 	for _, g := range Grants(rules) {
 		b.WriteString("\n")
 		if g.Widened {
-			b.WriteString("# NOTE: a placeholder shares this segment with literal text; widened.\n")
+			b.WriteString("# NOTE: a placeholder shares this segment with literal text, so it is widened.\n")
 		}
 		fmt.Fprintf(&b, "path %q {\n  capabilities = [\"read\"]\n}\n", g.Path)
 	}
@@ -70,7 +70,7 @@ func policyPath(r config.Credential) (path string, widened bool) {
 
 	// A rule matching one unit and one credential ID resolves to one path, so
 	// substituting what its globs pin keeps those segments literal instead of
-	// spending a wildcard on a value that can only take one form.
+	// granting a wildcard for a value that can only take one form.
 	expand := config.Replacer(config.PinnedValues(r.Unit, r.Credential))
 
 	segments := strings.Split(read, "/")

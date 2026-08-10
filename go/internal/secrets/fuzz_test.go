@@ -29,7 +29,7 @@ func FuzzResolve(f *testing.F) {
 
 	f.Fuzz(func(t *testing.T, unitGlob, credGlob, backend, mount, path, format, field, unit, credential string) {
 		// ParsePeer never produces an empty or slash-carrying unit or
-		// credential ID; FuzzParsePeer holds it to that.
+		// credential ID. FuzzParsePeer holds it to that.
 		if unit == "" || credential == "" || strings.ContainsRune(unit+credential, '/') {
 			t.Skip()
 		}

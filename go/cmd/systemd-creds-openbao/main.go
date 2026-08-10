@@ -29,7 +29,7 @@ import (
 // version is set at build time via -ldflags "-X main.version=...".
 var version = "dev"
 
-// reloadTimeout bounds the OpenBao login a reload performs. The manager blocks
+// reloadTimeout limits the OpenBao login a reload performs. The manager blocks
 // on the READY=1 that ends a reload, so without it an OpenBao outage would
 // take down a daemon that is serving fine.
 const reloadTimeout = 30 * time.Second
@@ -41,15 +41,15 @@ func main() {
 func run() int {
 	var (
 		configPath  = flag.String("config", "/etc/systemd-creds-openbao/config.toml", "path to the configuration file")
-		checkOnly   = flag.Bool("check", false, "validate the configuration and exit")
-		printPolicy = flag.Bool("print-policy", false, "print an OpenBao policy covering the configured rules and exit")
+		checkOnly   = flag.Bool("check", false, "validate the configuration")
+		printPolicy = flag.Bool("print-policy", false, "print an OpenBao policy covering the configured rules")
 		logLevel    = flag.String("log-level", "info", "log level: debug, info, warn, or error")
-		showVersion = flag.Bool("version", false, "print the version and exit")
+		showVersion = flag.Bool("version", false, "print the version")
 	)
 	flag.Parse()
 
 	if flag.NArg() > 0 {
-		fmt.Fprintf(os.Stderr, "unexpected argument %q; the configuration file is set with -config\n", flag.Arg(0))
+		fmt.Fprintf(os.Stderr, "unexpected argument %q (the configuration file is set with -config)\n", flag.Arg(0))
 		return 2
 	}
 
@@ -92,15 +92,15 @@ func run() int {
 	signal.Notify(reload, syscall.SIGHUP)
 	defer signal.Stop(reload)
 
-	// Adopting the sockets first keeps a misconfigured socket unit a prompt
-	// error, since logging in retries a transient failure indefinitely.
+	// Adopting the sockets first fails a misconfigured socket unit right away,
+	// since logging in retries a transient failure indefinitely.
 	listeners, err := listen()
 	if err != nil {
 		log.Error("failed to listen", "ERROR", err)
 		return 1
 	}
 
-	// The client's context governs its token renewal; a reload cancels it.
+	// The client's context governs its token renewal. A reload cancels it.
 	clientCtx, stopClient := context.WithCancel(ctx)
 	client, err := bao.New(clientCtx, cfg.OpenBao, log)
 	if err != nil {
@@ -110,8 +110,8 @@ func run() int {
 	}
 
 	// The cache outlives reloads, so responses fetched before a SIGHUP still
-	// cover an outage after it; ctx, not clientCtx, bounds its sweep for the
-	// same reason.
+	// cover an outage after it. Its sweep runs under ctx, not clientCtx, for
+	// the same reason.
 	cache := bao.NewStaleCache(ctx, client, cfg.OpenBao.ServeStaleFor, log)
 
 	srv := credserver.New(
@@ -133,7 +133,7 @@ func run() int {
 	for _, l := range listeners {
 		log.Info("listening", "ADDRESS", l.Addr())
 		go func() {
-			// Serve retries accept errors and returns, nil, only once the
+			// Serve retries accept errors and returns nil only once the
 			// listener is closed.
 			_ = srv.Serve(l)
 			serveClosed <- struct{}{}
@@ -149,7 +149,7 @@ func run() int {
 			log.Info("shutting down on signal")
 			return 0
 		case <-serveClosed:
-			// Nothing in the daemon closes a listener; the sockets are
+			// Nothing in the daemon closes a listener. The sockets are
 			// systemd's. Whatever did leaves requests queueing unanswered,
 			// so fail: the restart re-adopts the socket unit's fd.
 			log.Error("listener closed unexpectedly")
@@ -264,7 +264,7 @@ func listen() ([]net.Listener, error) {
 		return nil, fmt.Errorf("checking for socket activation: %w", err)
 	}
 	if len(listeners) == 0 {
-		return nil, errors.New("no sockets received; start via systemd-creds-openbao.socket")
+		return nil, errors.New("no sockets received (start via systemd-creds-openbao.socket)")
 	}
 	for i, l := range listeners {
 		if l == nil {

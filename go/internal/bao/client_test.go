@@ -310,7 +310,7 @@ func TestReadRejectsOversizedResponse(t *testing.T) {
 	if !strings.Contains(err.Error(), "limit") {
 		t.Errorf("error %q does not report the size limit", err)
 	}
-	// A secret does not shrink on retry: classified transient, the failure
+	// A secret does not shrink on retry. Classified transient, the failure
 	// would be retried forever and, serving stale, never reach the journal.
 	if retryable(err) {
 		t.Errorf("size-limit error %q classified retryable, want authoritative", err)
@@ -318,7 +318,7 @@ func TestReadRejectsOversizedResponse(t *testing.T) {
 }
 
 // The declared length refuses the response at RoundTrip, whose error net/http
-// wraps in a *url.Error; the classification has to survive that wrapping.
+// wraps in a *url.Error. The classification has to survive that wrapping.
 func TestReadRejectsOversizedResponseByContentLength(t *testing.T) {
 	t.Setenv("BAO_MAX_RETRIES", "0")
 	mux := http.NewServeMux()
@@ -464,7 +464,7 @@ func TestTokenFileEnvExpansion(t *testing.T) {
 func TestTokenFileUnsetEnvVarFails(t *testing.T) {
 	srv := fakeBao(t)
 	t.Setenv("BAO_ADDR", srv.URL)
-	// t.Setenv registers the restore; the test needs the variable absent.
+	// t.Setenv registers the restore. The test needs the variable absent.
 	t.Setenv("CREDENTIALS_DIRECTORY", "")
 	_ = os.Unsetenv("CREDENTIALS_DIRECTORY")
 
@@ -567,7 +567,7 @@ func TestCertLoginWithoutClientCert(t *testing.T) {
 		"BAO_CLIENT_CERT", "BAO_CLIENT_CERT_BYTES",
 		"VAULT_CLIENT_CERT", "VAULT_CLIENT_CERT_BYTES",
 	} {
-		// t.Setenv registers the restore; the test needs the variable absent.
+		// t.Setenv registers the restore. The test needs the variable absent.
 		t.Setenv(v, "")
 		_ = os.Unsetenv(v)
 	}
@@ -608,7 +608,7 @@ func TestStaticTokenRenewalProbe(t *testing.T) {
 	}
 }
 
-// A 500 must not be read as "not renewable"; see renewStaticToken.
+// A 500 must not be read as "not renewable". See renewStaticToken.
 func TestStaticTokenRenewalRetriesTransientFailure(t *testing.T) {
 	var attempts atomic.Int32
 	renewed := make(chan struct{})
@@ -697,7 +697,7 @@ func TestRenewalResumesAfterTheWatcherFails(t *testing.T) {
 	}
 }
 
-// Re-authenticating on a renewal failure must back off: the login itself
+// Re-authenticating on a renewal failure must back off. The login itself
 // succeeds, so nothing else rate-limits the loop, and every pass mints a token.
 func TestRenewalFailureDoesNotSpinOnRelogin(t *testing.T) {
 	var logins atomic.Int32

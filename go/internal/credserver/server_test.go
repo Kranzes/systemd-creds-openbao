@@ -213,7 +213,7 @@ func TestServerStats(t *testing.T) {
 	expect(1, 1)
 
 	// A connection rejected before the protocol even starts is a refusal
-	// too: every connection lands in exactly one counter.
+	// too. Every connection lands in exactly one counter.
 	conn, err := net.Dial("unix", socket)
 	if err != nil {
 		t.Fatal(err)

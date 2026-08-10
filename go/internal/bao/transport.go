@@ -6,12 +6,12 @@ import (
 	"net/http"
 )
 
-// responseSizeMax bounds the body of an OpenBao response. The client library
+// responseSizeMax limits the body of an OpenBao response. The client library
 // buffers a whole response before anything looks at its size, and parsing tees
 // it into a second buffer, so without a limit one read of a hostile or
 // misconfigured server turns into gigabytes of heap. The daemon can serve at
-// most 1 MiB (credserver.CredentialSizeMax, systemd's credential size limit);
-// the rest is room for the JSON envelope and the other fields of the same
+// most 1 MiB (credserver.CredentialSizeMax, systemd's credential size limit).
+// The rest is room for the JSON envelope and the other fields of the same
 // secret.
 const responseSizeMax = 4 * 1024 * 1024
 
@@ -37,7 +37,7 @@ func (t *limitTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 // responseTooLargeError reports a response over responseSizeMax. It carries a
 // type so retryable can pick it out of the *url.Error net/http wraps around a
-// RoundTrip failure: a secret does not shrink on retry, so classifying it as
+// RoundTrip failure. A secret does not shrink on retry, so classifying it as
 // transient would retry it forever and, with serve_stale_for set, keep the
 // real cause out of the journal behind the stale-data warning.
 type responseTooLargeError struct {

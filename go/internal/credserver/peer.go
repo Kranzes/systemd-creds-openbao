@@ -20,8 +20,7 @@ type Request struct {
 	Credential string
 }
 
-// ref names the request the way the log messages do. Only the paths that log
-// build it, since most connections are served without ever formatting it.
+// ref names the request the way the log messages do.
 func (r Request) ref() string {
 	return fmt.Sprintf("%q for %q", r.Credential, r.Unit)
 }

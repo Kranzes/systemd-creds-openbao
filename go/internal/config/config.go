@@ -23,7 +23,7 @@ const (
 
 // Secret backends a credential rule can read from.
 const (
-	BackendKV  = "kv"  // KV v2; v1 is only reachable through raw
+	BackendKV  = "kv"  // KV v2. v1 is only reachable through raw
 	BackendRaw = "raw" // verbatim read of an arbitrary API path
 )
 
@@ -64,12 +64,12 @@ type Auth struct {
 
 	// Required for token auth. Unset, the client library's
 	// BAO_TOKEN/VAULT_TOKEN is used instead, which is how the tests drive
-	// token auth; a deployment passes the token as a file, since systemd
+	// token auth. A deployment passes the token as a file, since systemd
 	// exposes a unit's environment to any local user.
 	TokenFile string `toml:"token_file"`
 
 	// The role ID is an identifier, not a secret, so it may be set inline.
-	// The secret ID is password-equivalent and has no inline key: the config
+	// The secret ID is password-equivalent and has no inline key, the config
 	// file never holds confidential material.
 	RoleID       string `toml:"role_id"`
 	RoleIDFile   string `toml:"role_id_file"`
@@ -77,11 +77,11 @@ type Auth struct {
 
 	// Cert login uses the client certificate from
 	// BAO_CLIENT_CERT/BAO_CLIENT_KEY. CertRole restricts it to one
-	// certificate role; unset, the server tries all of them.
+	// certificate role. Unset, the server tries all of them.
 	CertRole string `toml:"cert_role"`
 
 	// The JWT is a bearer credential and has no inline key. JWTRole names
-	// the role to log in with; unset, the mount's default role applies.
+	// the role to log in with. Unset, the mount's default role applies.
 	JWTFile string `toml:"jwt_file"`
 	JWTRole string `toml:"jwt_role"`
 
@@ -92,9 +92,9 @@ type Auth struct {
 
 // Server configures the credential socket server.
 type Server struct {
-	// ConnectionTimeout bounds the read from OpenBao and, separately, the
-	// write of the payload back to the service manager. A bare integer
-	// decodes as nanoseconds, so write it as "15s".
+	// ConnectionTimeout is the timeout for the read from OpenBao, applied
+	// again to the write of the payload back to the service manager. A bare
+	// integer decodes as nanoseconds, so write it as "15s".
 	ConnectionTimeout time.Duration `toml:"connection_timeout"`
 }
 
@@ -128,19 +128,12 @@ func PlaceholderValues(unit, credential string) map[string]string {
 	}
 }
 
-// PinnedValues returns the placeholder values a rule's globs already determine.
-// A glob carrying none of path.Match's metacharacters matches exactly one
-// string, so every placeholder fed from it expands to a constant that package
-// policy can write into the generated policy in place of a wildcard. {prefix}
-// is also determined by a template glob whose text before the first "@" is
-// literal: every unit "worker@*.service" matches starts with "worker@", which
-// is where the unit's first "@" sits. The instance has no such anchor, since
-// "*@x.service" also matches "a@b@x.service", whose {instance} is "b@x", so a
-// wildcard anywhere in the glob leaves {instance} and {unit_name} free.
-// Placeholders the globs leave free are absent from the result. A pinned value
-// may be empty, which means the rule expands to a path with an empty segment
-// and can never serve; Credential.validate rejects that rather than letting
-// package policy spend a wildcard on it.
+// PinnedValues returns the placeholder values a rule's globs already determine,
+// omitting the ones left free. A glob without path.Match metacharacters matches
+// exactly one string, so its placeholders expand to constants. A template glob
+// with literal text before the "@" still pins {prefix}, but never {instance}
+// or {unit_name}: "*@x.service" also matches "a@b@x.service", whose instance
+// is "b@x". A pinned value may be empty, which Credential.validate rejects.
 func PinnedValues(unitGlob, credentialGlob string) map[string]string {
 	unitFixed, credentialFixed := isLiteralGlob(unitGlob), isLiteralGlob(credentialGlob)
 	head, _, templated := strings.Cut(unitGlob, "@")
@@ -162,9 +155,7 @@ func PinnedValues(unitGlob, credentialGlob string) map[string]string {
 // Replacer substitutes the placeholders values has an entry for and leaves the
 // rest in place. Package secrets passes what a request fixes, package policy
 // only what a rule's globs pin, so a placeholder still free survives to become
-// a wildcard. Both drive it from Placeholders, which is what keeps the path a
-// request reads and the path the policy grants in step. Callers reuse one
-// replacer across every template of the same request or rule.
+// a wildcard.
 func Replacer(values map[string]string) *strings.Replacer {
 	pairs := make([]string, 0, 2*len(values))
 	for _, p := range Placeholders {
@@ -180,13 +171,13 @@ func isLiteralGlob(glob string) bool {
 }
 
 // Credential maps requests to a secret in OpenBao. Rules are evaluated in file
-// order; the first rule whose Unit and Credential globs both match wins.
+// order. The first rule whose Unit and Credential globs both match wins.
 // Requests matching no rule are refused.
 //
 // Path, Field, and Mount support the placeholders in Placeholders.
 type Credential struct {
-	// Unit is a glob matched against the requesting unit name. Required;
-	// granting every unit takes an explicit "*".
+	// Unit is a glob matched against the requesting unit name. Required.
+	// Granting every unit takes an explicit "*".
 	Unit string `toml:"unit"`
 	// Credential is a glob matched against the requested credential ID.
 	// Default: "*".
@@ -207,9 +198,8 @@ type Credential struct {
 	Field string `toml:"field"`
 }
 
-// SecretRef names one secret to read. Package secrets builds it from a rule and
-// a request, package bao reads it; carrying the backend with the path is what
-// keeps the two from switching on it separately.
+// SecretRef names one secret to read. Package secrets builds it from a rule
+// and a request, and package bao reads it.
 type SecretRef struct {
 	// Raw reads Path as a full API path instead of a KV v2 secret under Mount.
 	Raw bool
@@ -227,15 +217,15 @@ func (r SecretRef) Location() string {
 	return r.Mount + "/" + r.Path
 }
 
-// checkDuration rejects a duration a bare TOML integer produced: it decodes as
-// nanoseconds, so connection_timeout = 15 would silently mean 15ns. Zero is the
-// caller's to interpret, since applyDefaults has already run.
+// checkDuration rejects a duration a bare TOML integer produced. Those decode
+// as nanoseconds, so connection_timeout = 15 would silently mean 15ns. Zero is
+// the caller's to interpret, since applyDefaults has already run.
 func checkDuration(what string, d time.Duration, example string) error {
 	if d < 0 {
 		return fmt.Errorf("%s must not be negative", what)
 	}
 	if d != 0 && d < time.Millisecond {
-		return fmt.Errorf("%s %v is too short to be meant; write it as a duration string like %q", what, d, example)
+		return fmt.Errorf("%s %v is too short, a bare integer decodes as nanoseconds, write it as a duration string like %q", what, d, example)
 	}
 	return nil
 }
@@ -243,8 +233,7 @@ func checkDuration(what string, d time.Duration, example string) error {
 // CheckSegments rejects an API path with an empty, ".", or ".." segment, which
 // could make URL normalization on the server resolve the read to a secret the
 // rule never granted. Package secrets applies it after placeholder expansion,
-// where the values come from the requesting side; a literal path carrying one
-// is rejected here because it could never serve anything anyway.
+// where the values come from the requesting side.
 func CheckSegments(what, p string) error {
 	for seg := range strings.SplitSeq(p, "/") {
 		if seg == "" || seg == "." || seg == ".." {
@@ -266,13 +255,8 @@ func checkLiteral(what, p string) error {
 
 // checkPolicyWildcards rejects text carrying one of the wildcards OpenBao's
 // policy syntax recognizes: "+" matches any one segment, and a trailing "*"
-// matches any suffix. Package policy writes a rule's path into the generated
-// policy, while package secrets requests it verbatim, so a rule carrying either
-// grants a subtree it can never read a secret from. The unit and credential
-// globs reach the policy the same way, through the values PinnedValues fixes,
-// which is why Credential.validate runs this over the pinned rendering as well
-// as the literal text: "+" is none of path.Match's metacharacters, so nothing
-// else would stop a glob from pinning a segment to one.
+// matches any suffix. A rule carrying either grants a subtree it can never
+// read a secret from.
 func checkPolicyWildcards(what, p string) error {
 	var found string
 	switch {
@@ -283,7 +267,7 @@ func checkPolicyWildcards(what, p string) error {
 	default:
 		return nil
 	}
-	return fmt.Errorf("%s %q contains %q, a wildcard in an OpenBao policy; the daemon reads the path verbatim, so the rule would grant far more than it can serve", what, p, found)
+	return fmt.Errorf("%s %q contains %q, which an OpenBao policy reads as a wildcard, so the rule would grant far more than it can serve", what, p, found)
 }
 
 // Parse decodes, applies defaults to, and validates a configuration.
@@ -420,12 +404,8 @@ func (r *Credential) validate() error {
 		return err
 	}
 
-	// What the globs pin is known now, and package policy writes exactly that
-	// text into the generated policy while a request expands to exactly it, so
-	// the pinned rendering has to clear the same checks as a literal path. This
-	// is what catches a rule that pins a segment to "+" (a policy wildcard the
-	// path never showed) or to nothing (a path no request can read, which
-	// package policy would otherwise grant as a whole wildcard segment).
+	// What the globs pin becomes literal text in the generated policy, so it
+	// has to clear the same checks as a literal path.
 	expand := Replacer(PinnedValues(r.Unit, r.Credential))
 	if err := checkLiteral("path with the values its globs pin", expand.Replace(r.Path)); err != nil {
 		return err

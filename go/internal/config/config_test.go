@@ -142,7 +142,7 @@ func TestParseErrors(t *testing.T) {
 			want: "secret_id_file is required",
 		},
 		{
-			// The secret ID is confidential: it has no inline key.
+			// The secret ID is confidential, so it has no inline key.
 			name: "approle with inline secret_id",
 			toml: "[openbao.auth]\nmethod = \"approle\"\nrole_id = \"r\"\nsecret_id = \"s\"",
 			want: "openbao.auth.secret_id",
@@ -178,7 +178,7 @@ func TestParseErrors(t *testing.T) {
 			want: "jwt_file is required",
 		},
 		{
-			// The JWT is a bearer credential: it has no inline key.
+			// The JWT is a bearer credential, so it has no inline key.
 			name: "jwt with inline jwt",
 			toml: "[openbao.auth]\nmethod = \"jwt\"\njwt = \"eyJ...\"\njwt_role = \"r\"",
 			want: "openbao.auth.jwt",
@@ -232,7 +232,7 @@ func TestParseErrors(t *testing.T) {
 			// A bare integer is nanoseconds, so "15" is not "15s".
 			name: "bare integer connection timeout",
 			toml: "[server]\nconnection_timeout = 15",
-			want: "too short to be meant",
+			want: "a bare integer decodes as nanoseconds",
 		},
 		{
 			name: "negative serve_stale_for",
@@ -242,7 +242,7 @@ func TestParseErrors(t *testing.T) {
 		{
 			name: "bare integer serve_stale_for",
 			toml: "[openbao]\nserve_stale_for = 3600",
-			want: "too short to be meant",
+			want: "a bare integer decodes as nanoseconds",
 		},
 		{
 			// The resolver refuses these at request time, so such a rule
@@ -262,7 +262,7 @@ func TestParseErrors(t *testing.T) {
 			want: "segment",
 		},
 		{
-			// Unit and credential are globs, but the path is not: a wildcard
+			// Unit and credential are globs, but the path is not. A wildcard
 			// there is literal to the resolver and a wildcard to the policy,
 			// so the rule would grant a subtree it can never read from.
 			name: "path with a trailing wildcard",
@@ -365,7 +365,7 @@ func TestParseAllowsAPinnedWildcardThePolicyNeverSees(t *testing.T) {
 }
 
 func TestParseAllowsAFreePlaceholderTheGlobsLeaveWild(t *testing.T) {
-	// "+*" carries a metacharacter, so nothing is pinned and the policy spends
+	// "+*" carries a metacharacter, so nothing is pinned and the policy grants
 	// the wildcard the placeholder already asks for rather than the glob's "+".
 	if _, err := Parse([]byte("[[credentials]]\nunit = \"u.service\"\ncredential = \"+*\"\npath = \"apps/{credential}\"")); err != nil {
 		t.Fatal(err)
