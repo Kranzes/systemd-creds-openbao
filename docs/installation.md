@@ -69,7 +69,10 @@ The options under `services.systemd-creds-openbao`:
 
 `settings` is rendered to TOML and validated with [`-check`](cli.md#-check)
 at build time, so a misconfiguration fails the system build rather than the
-running daemon. The generated policy is a derivation, buildable straight
+running daemon. The rendered file lands at
+`/etc/systemd-creds-openbao/config.toml`, the path the CLI reads without
+`-config`, so [`-resolve`](cli.md#-resolve) works for any user on the
+machine. The generated policy is a derivation, buildable straight
 from your system's configuration:
 
 ```console

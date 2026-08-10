@@ -14,6 +14,9 @@ dropping the socket or restarting the daemon:
   configuration serving. `systemctl reload` exits 0 either way, so the
   journal is the only signal.
 
+On NixOS, `nixos-rebuild switch` applies a `settings` change as exactly this
+reload. Changing `package` or `environment` restarts the daemon instead.
+
 The service counts as started only once the daemon has authenticated.
 
 ## Failure behavior

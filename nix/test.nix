@@ -94,6 +94,16 @@ in
         "openbao-token:/run/keys/openbao-token"
       ];
 
+      # A settings-only change, switched to by the last subtest.
+      specialisation.extra-rule.configuration = {
+        services.systemd-creds-openbao.settings.credentials = [
+          {
+            unit = "extra.service";
+            path = "systemd/{unit_name}";
+          }
+        ];
+      };
+
       services.prometheus = {
         enable = true;
         webConfigFile = "/run/credentials/prometheus.service/web.yml";
@@ -273,5 +283,20 @@ in
           machine.succeed("bao kv put -mount=kv systemd/creds-test fallback=rotated-value")
           fetch_credentials("/tmp/creds-fresh", ["fallback"])
           t.assertEqual(machine.succeed("cat /tmp/creds-fresh/fallback"), "rotated-value")
+
+      with subtest("A settings change on switch applies as a reload"):
+          pid = machine.succeed("systemctl show -p MainPID --value systemd-creds-openbao.service").strip()
+          machine.succeed("/run/current-system/specialisation/extra-rule/bin/switch-to-configuration test")
+          t.assertEqual(
+              machine.succeed("systemctl show -p MainPID --value systemd-creds-openbao.service").strip(),
+              pid,
+          )
+          machine.succeed(
+              "journalctl -u systemd-creds-openbao "
+              "RULES=${
+                toString (1 + builtins.length nodes.machine.services.systemd-creds-openbao.settings.credentials)
+              } "
+              "--grep 'configuration reloaded'"
+          )
     '';
 }

@@ -111,6 +111,11 @@ in
   config = lib.mkIf cfg.enable {
     systemd.packages = [ cfg.package ];
 
+    # The path the packaged unit's ExecStart reads, and the CLI's default,
+    # so -resolve and -print-policy work against the live configuration
+    # without a -config flag.
+    environment.etc."systemd-creds-openbao/config.toml".source = configFile;
+
     # NixOS ignores [Install] in units coming from systemd.packages.
     systemd.sockets.systemd-creds-openbao = {
       wantedBy = [ "sockets.target" ];
@@ -126,12 +131,10 @@ in
       # fetching credentials while it is gone fail outright. Restarting only
       # the service keeps the socket listening, so callers queue instead.
       stopIfChanged = false;
-      serviceConfig = {
-        ExecStart = [
-          ""
-          "${lib.getExe cfg.package} -config ${configFile}"
-        ];
-      };
+      # A settings-only change applies as a reload, which keeps the stale
+      # cache and serves without a gap. The unit file does not reference the
+      # configuration, so nothing else about it changes.
+      reloadTriggers = [ configFile ];
     };
   };
 }
