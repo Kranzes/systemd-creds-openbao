@@ -27,6 +27,7 @@ rec {
 
       gofumpt = {
         command = lib.getExe pkgs.gofumpt;
+        options = [ "-w" ];
         includes = [ "*.go" ];
       };
     };
