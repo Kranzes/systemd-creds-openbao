@@ -135,6 +135,12 @@ func (c *Client) withRetry(ctx context.Context, what string, failFast bool, do f
 		if err == nil || (failFast && !retryable(err)) {
 			return secret, err
 		}
+		// The caller gave up, so hand back the attempt's error rather than
+		// logging a retry that will never happen. The cause reaches the
+		// journal through whoever reports the failure.
+		if ctx.Err() != nil {
+			return secret, err
+		}
 		c.log.Warn(what+" failed, retrying", "ERROR", err, "RETRY_IN", backoff)
 		if !sleep(ctx, backoff) {
 			return nil, ctx.Err()
@@ -160,7 +166,14 @@ func retryable(err error) bool {
 			respErr.StatusCode == http.StatusTooManyRequests
 	}
 	var urlErr *url.Error
-	return errors.As(err, &urlErr)
+	if errors.As(err, &urlErr) {
+		return true
+	}
+	// The client library hands back a bare context error when the deadline
+	// expires mid-attempt. A server that never answered says nothing about
+	// the secret, and neither does a request the caller abandoned, so
+	// neither may count as authoritative and drop what StaleCache remembers.
+	return errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)
 }
 
 // tokenRejectedError marks a read refused because OpenBao rejected the

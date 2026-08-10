@@ -87,6 +87,25 @@ func TestStaleCacheServesStaleOnTransientError(t *testing.T) {
 	}
 }
 
+// A hung server surfaces as a bare context error rather than a url.Error,
+// and is an outage like any other.
+func TestStaleCacheServesStaleOnContextDeadline(t *testing.T) {
+	inner := &flakyReader{data: map[string]any{"password": "hunter2"}}
+	c, _ := testStaleCache(inner, time.Hour)
+
+	if _, err := readKV(t, c); err != nil {
+		t.Fatal(err)
+	}
+	inner.failWith = context.DeadlineExceeded
+	got, err := readKV(t, c)
+	if err != nil {
+		t.Fatalf("expected stale data, got %v", err)
+	}
+	if got["password"] != "hunter2" {
+		t.Fatalf("got %v", got)
+	}
+}
+
 func TestStaleCacheRespectsMaxAge(t *testing.T) {
 	inner := &flakyReader{data: map[string]any{"password": "hunter2"}}
 	c, clock := testStaleCache(inner, time.Hour)
