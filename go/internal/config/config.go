@@ -421,7 +421,8 @@ func (c *Config) validate() error {
 
 	for i := range c.Credentials {
 		if err := c.Credentials[i].validate(); err != nil {
-			return fmt.Errorf("credentials[%d]: %w", i, err)
+			// Rules are numbered from one, the way -resolve reports them.
+			return fmt.Errorf("credentials rule %d: %w", i+1, err)
 		}
 	}
 	return nil
