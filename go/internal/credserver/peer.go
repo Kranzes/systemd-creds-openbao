@@ -25,6 +25,20 @@ func (r Request) ref() string {
 	return fmt.Sprintf("%q for %q", r.Credential, r.Unit)
 }
 
+// NewRequest applies the shape checks ParsePeer applies, so a request built
+// from CLI arguments is refused exactly like one from the socket. Globs are
+// matched against whole names and placeholder values join path segments, so
+// neither part may be empty or contain a slash.
+func NewRequest(unit, credential string) (Request, error) {
+	if unit == "" || strings.Contains(unit, "/") {
+		return Request{}, fmt.Errorf("invalid unit name %q", unit)
+	}
+	if credential == "" || strings.Contains(credential, "/") {
+		return Request{}, fmt.Errorf("invalid credential ID %q", credential)
+	}
+	return Request{Unit: unit, Credential: credential}, nil
+}
+
 // ParsePeer extracts the requesting unit and credential ID from the peer
 // address of an accepted connection. It fails unless the peer is bound to an
 // abstract-namespace address in systemd's format, which also rejects ordinary
@@ -47,12 +61,12 @@ func ParsePeer(addr net.Addr) (Request, error) {
 	}
 
 	unit, credential, ok := strings.Cut(rest, "/")
-	if !ok || unit == "" || credential == "" {
+	if !ok {
 		return Request{}, fmt.Errorf("peer address %q does not encode a unit and credential ID", ua.Name)
 	}
-	if strings.Contains(credential, "/") {
-		return Request{}, fmt.Errorf("peer address %q encodes an invalid credential ID", ua.Name)
+	req, err := NewRequest(unit, credential)
+	if err != nil {
+		return Request{}, fmt.Errorf("peer address %q: %w", ua.Name, err)
 	}
-
-	return Request{Unit: unit, Credential: credential}, nil
+	return req, nil
 }

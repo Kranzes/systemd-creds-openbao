@@ -116,7 +116,11 @@ func run() int {
 		return 0
 	}
 	if *resolveReq {
-		req := credserver.Request{Unit: flag.Arg(0), Credential: flag.Arg(1)}
+		req, err := credserver.NewRequest(flag.Arg(0), flag.Arg(1))
+		if err != nil {
+			log.Error("request refused", "ERROR", err)
+			return 1
+		}
 		plan, err := secrets.NewResolver(cfg.Credentials, nil).Plan(req)
 		if err != nil {
 			log.Error("request refused", "ERROR", err)
