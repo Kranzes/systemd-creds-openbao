@@ -169,7 +169,7 @@ in
       with subtest("Store secrets"):
           # One secret per consumer unit, at the paths the rules expand to.
           machine.succeed("bao secrets enable -version=2 kv")
-          machine.succeed(f"bao kv put -mount=kv systemd/prometheus 'web.yml={web_yml(bcrypt('password1'))}'")
+          machine.wait_until_succeeds(f"bao kv put -mount=kv systemd/prometheus 'web.yml={web_yml(bcrypt('password1'))}'")
           machine.succeed(
               f"bao kv put -mount=kv systemd/creds-test binary={binary_b64} fallback=fallback-value"
           )
