@@ -4,6 +4,7 @@ package bao
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -115,7 +116,7 @@ func (c *Client) authenticate(ctx context.Context) error {
 // forever. Transient failures back off in process rather than crash-looping
 // the daemon into systemd's start limit.
 func (c *Client) loginWithRetry(ctx context.Context, failFast bool) (*api.Secret, error) {
-	return c.withRetry(ctx, "OpenBao login", failFast, func() (*api.Secret, error) {
+	return c.withRetry(ctx, "OpenBao login", failFast, loginRetryable, func() (*api.Secret, error) {
 		return c.login(ctx)
 	})
 }
@@ -127,12 +128,13 @@ const (
 )
 
 // withRetry calls do until it succeeds or ctx is canceled, backing off between
-// attempts. With failFast a definitive rejection ends the loop instead.
-func (c *Client) withRetry(ctx context.Context, what string, failFast bool, do func() (*api.Secret, error)) (*api.Secret, error) {
+// attempts. With failFast an error canRetry rules definitive ends the loop
+// instead.
+func (c *Client) withRetry(ctx context.Context, what string, failFast bool, canRetry func(error) bool, do func() (*api.Secret, error)) (*api.Secret, error) {
 	backoff := backoffStart
 	for {
 		secret, err := do()
-		if err == nil || (failFast && !retryable(err)) {
+		if err == nil || (failFast && !canRetry(err)) {
 			return secret, err
 		}
 		// The caller gave up, so hand back the attempt's error rather than
@@ -174,6 +176,18 @@ func retryable(err error) bool {
 	// the secret, and neither does a request the caller abandoned, so
 	// neither may count as authoritative and drop what StaleCache remembers.
 	return errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)
+}
+
+// loginRetryable is retryable for the login path. A certificate verification
+// failure reports a misconfiguration that no retry can fix, so startup fails
+// instead of backing off forever. Everywhere else the same failure is a
+// transport outage, to be waited out or covered by the stale fallback.
+func loginRetryable(err error) bool {
+	var certErr *tls.CertificateVerificationError
+	if errors.As(err, &certErr) {
+		return false
+	}
+	return retryable(err)
 }
 
 // tokenRejectedError marks a read refused because OpenBao rejected the
@@ -294,7 +308,9 @@ func (c *Client) setLoginToken(secret *api.Secret) (*api.Secret, error) {
 func (c *Client) renewStaticToken(ctx context.Context) {
 	// The first renewal runs at startup, so treating an unreachable OpenBao
 	// as "not renewable" would drop renewal for the whole process lifetime.
-	secret, err := c.withRetry(ctx, "renewing the OpenBao token", true, func() (*api.Secret, error) {
+	// retryable rather than loginRetryable, a certificate failure at the
+	// probe is an outage to wait out, not a reason to drop renewal.
+	secret, err := c.withRetry(ctx, "renewing the OpenBao token", true, retryable, func() (*api.Secret, error) {
 		return c.api.Auth().Token().RenewSelfWithContext(ctx, 0)
 	})
 	if err != nil {

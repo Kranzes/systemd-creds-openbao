@@ -2,6 +2,7 @@ package bao
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"net/http"
 	"net/url"
@@ -70,20 +71,25 @@ func TestStaleCacheReadsFreshWhileHealthy(t *testing.T) {
 }
 
 func TestStaleCacheServesStaleOnTransientError(t *testing.T) {
-	inner := &flakyReader{data: map[string]any{"password": "hunter2"}}
-	c, clock := testStaleCache(inner, time.Hour)
+	// A failed certificate verification is a transport outage like a refused
+	// connection. Only the login path treats it as definitive.
+	certDown := &url.Error{Op: "Get", URL: "https://bao", Err: &tls.CertificateVerificationError{}}
+	for _, transient := range []error{errDown, certDown} {
+		inner := &flakyReader{data: map[string]any{"password": "hunter2"}}
+		c, clock := testStaleCache(inner, time.Hour)
 
-	if _, err := readKV(t, c); err != nil {
-		t.Fatal(err)
-	}
-	inner.failWith = errDown
-	*clock = clock.Add(59 * time.Minute)
-	got, err := readKV(t, c)
-	if err != nil {
-		t.Fatalf("expected stale data, got error %v", err)
-	}
-	if got["password"] != "hunter2" {
-		t.Fatalf("got %v", got)
+		if _, err := readKV(t, c); err != nil {
+			t.Fatal(err)
+		}
+		inner.failWith = transient
+		*clock = clock.Add(59 * time.Minute)
+		got, err := readKV(t, c)
+		if err != nil {
+			t.Fatalf("%v: expected stale data, got error %v", transient, err)
+		}
+		if got["password"] != "hunter2" {
+			t.Fatalf("%v: got %v", transient, got)
+		}
 	}
 }
 

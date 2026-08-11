@@ -6,9 +6,11 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"io"
 	"log/slog"
 	"math/big"
@@ -579,6 +581,24 @@ func TestCertLoginWithoutClientCert(t *testing.T) {
 	_, err := New(context.Background(), cfg, testLogger())
 	if err == nil || !strings.Contains(err.Error(), "client certificate") {
 		t.Errorf("err = %v, want missing-client-certificate error", err)
+	}
+}
+
+// A login that cannot verify the server certificate must fail the unit, not
+// back off forever with the cause buried in retry warnings.
+func TestLoginFailsFastOnCertificateVerificationFailure(t *testing.T) {
+	srv := httptest.NewTLSServer(http.NotFoundHandler())
+	t.Cleanup(srv.Close)
+
+	// No BAO_CACERT, so the self-signed server certificate cannot verify.
+	cfg := approleConfig(t, srv, "my-role", "my-secret")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err := New(ctx, cfg, testLogger())
+	var certErr *tls.CertificateVerificationError
+	if !errors.As(err, &certErr) {
+		t.Errorf("err = %v, want a certificate verification failure without retries", err)
 	}
 }
 
