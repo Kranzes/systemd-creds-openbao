@@ -184,6 +184,71 @@ func TestStaleCacheAuthoritativeErrorInvalidatesEntry(t *testing.T) {
 	}
 }
 
+// readerFunc lets a test drive each Read call from a function.
+type readerFunc func(ctx context.Context, ref config.SecretRef) (map[string]any, error)
+
+func (f readerFunc) Read(ctx context.Context, ref config.SecretRef) (map[string]any, error) {
+	return f(ctx, ref)
+}
+
+// A slow successful read must not store data a concurrent authoritative
+// refusal invalidated, or the revoked value resurfaces during a later outage
+// with a fresh timestamp.
+func TestStaleCacheSlowReadDoesNotOutliveARefusal(t *testing.T) {
+	started := make(chan struct{})
+	unblock := make(chan struct{})
+	denied := &api.ResponseError{StatusCode: http.StatusForbidden}
+	var calls atomic.Int32
+	inner := readerFunc(func(context.Context, config.SecretRef) (map[string]any, error) {
+		if calls.Add(1) == 1 {
+			close(started)
+			<-unblock
+			return map[string]any{"password": "hunter2"}, nil
+		}
+		return nil, denied
+	})
+	c, _ := testStaleCache(inner, time.Hour)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = c.Read(context.Background(), config.SecretRef{Mount: "kv", Path: "myapp/db"})
+	}()
+	<-started
+	if _, err := readKV(t, c); !errors.Is(err, denied) {
+		t.Fatalf("expected the permission error, got %v", err)
+	}
+	close(unblock)
+	<-done
+
+	c.mu.Lock()
+	n := len(c.entries)
+	c.mu.Unlock()
+	if n != 0 {
+		t.Fatal("the slow read stored an entry the refusal had invalidated")
+	}
+}
+
+// A refusal suppresses the store of any read that overlapped it, so the next
+// read after the refusal must store again.
+func TestStaleCacheStoresAgainAfterARefusal(t *testing.T) {
+	inner := &flakyReader{data: map[string]any{"password": "hunter2"}}
+	c, _ := testStaleCache(inner, time.Hour)
+
+	inner.failWith = &api.ResponseError{StatusCode: http.StatusForbidden}
+	if _, err := readKV(t, c); err == nil {
+		t.Fatal("expected the permission error")
+	}
+	inner.failWith = nil
+	if _, err := readKV(t, c); err != nil {
+		t.Fatal(err)
+	}
+	inner.failWith = errDown
+	if _, err := readKV(t, c); err != nil {
+		t.Fatalf("expected stale data from the read after the refusal, got %v", err)
+	}
+}
+
 // A 403 blamed on the daemon's own token must serve stale and keep the entry.
 // With a static token this is exactly the failure the daemon cannot self-heal,
 // so it is where the fallback matters most.

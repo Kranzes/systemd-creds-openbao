@@ -30,6 +30,13 @@ type StaleCache struct {
 	inner   reader
 	maxAge  time.Duration
 	entries map[config.SecretRef]entry
+	// gen counts authoritative refusals and only ever grows. A successful
+	// read that overlapped one may carry data from before it, so its store
+	// is skipped. One counter for the whole cache over-suppresses, a read
+	// overlapping an unrelated refusal skips a store that the next request
+	// refills, and in exchange the counter cannot collide and holds no
+	// per-key state that a requester could grow.
+	gen uint64
 }
 
 type entry struct {
@@ -104,7 +111,7 @@ func (s *StaleCache) Swap(inner reader, maxAge time.Duration) {
 // remembered response only when that fails with a transient error.
 func (s *StaleCache) Read(ctx context.Context, key config.SecretRef) (map[string]any, error) {
 	s.mu.Lock()
-	inner := s.inner
+	inner, gen := s.inner, s.gen
 	s.mu.Unlock()
 
 	data, err := inner.Read(ctx, key)
@@ -112,7 +119,7 @@ func (s *StaleCache) Read(ctx context.Context, key config.SecretRef) (map[string
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err == nil {
-		if s.maxAge > 0 {
+		if s.maxAge > 0 && s.gen == gen {
 			s.entries[key] = entry{data: data, at: s.now()}
 		}
 		return data, nil
@@ -122,6 +129,7 @@ func (s *StaleCache) Read(ctx context.Context, key config.SecretRef) (map[string
 		// secret OpenBao revoked or deleted must not resurface during a
 		// later outage.
 		delete(s.entries, key)
+		s.gen++
 		return nil, err
 	}
 	e, ok := s.entries[key]
