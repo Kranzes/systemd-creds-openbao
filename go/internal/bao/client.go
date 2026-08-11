@@ -93,6 +93,18 @@ func (c *Client) authenticate(ctx context.Context) error {
 		if c.api.Token() == "" {
 			return errors.New("no OpenBao token: set openbao.auth.token_file")
 		}
+		// One quick lookup checks the token. A rejection fails the startup
+		// or reload that adopted it, so a bad rotated token_file cannot
+		// replace a working client with a broken one. An unanswered check
+		// only logs, the daemon must come up during an OpenBao outage and
+		// serve once it returns.
+		if err := c.lookupToken(ctx); err != nil {
+			var respErr *api.ResponseError
+			if errors.As(err, &respErr) && respErr.StatusCode == http.StatusForbidden {
+				return fmt.Errorf("checking the OpenBao token: %w", err)
+			}
+			c.log.Warn("cannot check the OpenBao token, continuing", "ERROR", err)
+		}
 		go c.renewStaticToken(ctx)
 		return nil
 
@@ -326,14 +338,31 @@ func (c *Client) setLoginToken(secret *api.Secret) (*api.Secret, error) {
 	return secret, nil
 }
 
+// CheckToken verifies the configured token with one lookup, treating any
+// failure as a refusal. A reload calls it so a rotated token_file that
+// cannot be verified does not replace a working client, while startup stays
+// lenient and serves once OpenBao returns. Methods that log in prove their
+// credential at authentication, so there is nothing left to check.
+func (c *Client) CheckToken(ctx context.Context) error {
+	if c.auth.Method != config.AuthToken {
+		return nil
+	}
+	if err := c.lookupToken(ctx); err != nil {
+		return fmt.Errorf("checking the OpenBao token: %w", err)
+	}
+	return nil
+}
+
 // renewStaticToken keeps a renewable configured token alive for as long as
 // OpenBao permits. A static token cannot be re-acquired, so once renewal is
 // exhausted the daemon serves until reads start failing.
 func (c *Client) renewStaticToken(ctx context.Context) {
-	// The first renewal runs at startup, so treating an unreachable OpenBao
-	// as "not renewable" would drop renewal for the whole process lifetime.
-	// retryable rather than loginRetryable, a certificate failure at the
-	// probe is an outage to wait out, not a reason to drop renewal.
+	// The first renewal runs at startup and doubles as the renewability
+	// probe. Its response carries the auth block the lifetime watcher needs,
+	// which the lookup-self check's response does not. Treating an
+	// unreachable OpenBao as "not renewable" would drop renewal for the
+	// whole process lifetime, so this is retryable rather than
+	// loginRetryable, a certificate failure here is an outage to wait out.
 	secret, err := c.withRetry(ctx, "renewing the OpenBao token", true, retryable, func() (*api.Secret, error) {
 		return c.api.Auth().Token().RenewSelfWithContext(ctx, 0)
 	})

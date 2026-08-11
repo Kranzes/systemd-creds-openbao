@@ -75,6 +75,14 @@ func fakeBao(t *testing.T) *httptest.Server {
 		w.WriteHeader(http.StatusBadRequest)
 		respond(w, map[string]any{"errors": []string{"lease is not renewable"}})
 	})
+	mux.HandleFunc("/v1/auth/token/lookup-self", func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("X-Vault-Token"); got != "test-token" {
+			w.WriteHeader(http.StatusForbidden)
+			respond(w, map[string]any{"errors": []string{"permission denied"}})
+			return
+		}
+		respond(w, map[string]any{"data": map[string]any{"id": "test-token"}})
+	})
 	mux.HandleFunc("/v1/auth/approle/login", func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -240,6 +248,18 @@ func jwtConfig(t *testing.T, srv *httptest.Server, jwt, role string) config.Open
 	return cfg
 }
 
+// handleLookupSelf accepts any token, for muxes built around other endpoints.
+// Token authentication checks the token through lookup-self.
+func handleLookupSelf(t *testing.T, mux *http.ServeMux) {
+	t.Helper()
+	mux.HandleFunc("/v1/auth/token/lookup-self", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"id": "t"}}); err != nil {
+			t.Errorf("encoding response: %v", err)
+		}
+	})
+}
+
 // testClient returns a token-authenticated Client backed by fakeBao.
 func testClient(t *testing.T) *Client {
 	t.Helper()
@@ -296,6 +316,7 @@ func TestReadRejectsOversizedResponse(t *testing.T) {
 		}
 		_, _ = io.WriteString(w, `"},"metadata":{"version":1}}}`)
 	})
+	handleLookupSelf(t, mux)
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
@@ -329,6 +350,7 @@ func TestReadRejectsOversizedResponseByContentLength(t *testing.T) {
 		w.Header().Set("Content-Length", strconv.Itoa(responseSizeMax+1))
 		w.WriteHeader(http.StatusOK)
 	})
+	handleLookupSelf(t, mux)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
@@ -384,12 +406,12 @@ func TestReadForbiddenClassification(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
+	tokenValid.Store(true)
 	client, err := New(context.Background(), tokenConfig(t, srv), testLogger())
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	tokenValid.Store(true)
 	_, err = client.Read(context.Background(), kvRef("denied"))
 	if err == nil || retryable(err) {
 		t.Errorf("403 with a valid token classified retryable (err = %v), want authoritative", err)
@@ -627,6 +649,7 @@ func TestStaticTokenRenewalProbe(t *testing.T) {
 			t.Errorf("encoding response: %v", err)
 		}
 	})
+	handleLookupSelf(t, mux)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
@@ -666,6 +689,7 @@ func TestStaticTokenRenewalRetriesTransientFailure(t *testing.T) {
 			close(renewed)
 		}
 	})
+	handleLookupSelf(t, mux)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
@@ -713,6 +737,7 @@ func TestRenewalResumesAfterTheWatcherFails(t *testing.T) {
 			}
 		}
 	})
+	handleLookupSelf(t, mux)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
@@ -787,8 +812,9 @@ func (b *syncBuffer) String() string {
 }
 
 // renewSelfLog runs a client against a renew-self that answers with status,
-// and returns what the renewal logged.
-func renewSelfLog(t *testing.T, status int, message string) string {
+// waits for want to be logged, and returns the log. Lookup-self accepts any
+// token, renewability is the probe's to decide.
+func renewSelfLog(t *testing.T, status int, message, want string) string {
 	t.Helper()
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/auth/token/renew-self", func(w http.ResponseWriter, _ *http.Request) {
@@ -797,6 +823,7 @@ func renewSelfLog(t *testing.T, status int, message string) string {
 			t.Errorf("encoding response: %v", err)
 		}
 	})
+	handleLookupSelf(t, mux)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
@@ -809,26 +836,92 @@ func renewSelfLog(t *testing.T, status int, message string) string {
 
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		if out := logs.String(); strings.Contains(out, "msg=") {
+		if out := logs.String(); strings.Contains(out, want) {
 			return out
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatal("renewal logged nothing")
+	t.Fatalf("renewal never logged %q, got %q", want, logs.String())
 	return ""
 }
 
 // A rejected token and one that merely cannot be renewed are both definitive,
 // but only the first is a problem worth reporting as one.
 func TestStaticTokenRejectionIsNotConfusedWithNonRenewable(t *testing.T) {
-	rejected := renewSelfLog(t, http.StatusForbidden, "permission denied")
-	if !strings.Contains(rejected, "level=ERROR") || !strings.Contains(rejected, "rejected the token") {
+	rejected := renewSelfLog(t, http.StatusForbidden, "permission denied", "rejected the token")
+	if !strings.Contains(rejected, "level=ERROR") {
 		t.Errorf("403 logged as %q, want an error about a rejected token", rejected)
 	}
 
-	notRenewable := renewSelfLog(t, http.StatusBadRequest, "lease is not renewable")
-	if !strings.Contains(notRenewable, "level=INFO") || !strings.Contains(notRenewable, "will not be auto-renewed") {
+	notRenewable := renewSelfLog(t, http.StatusBadRequest, "lease is not renewable", "will not be auto-renewed")
+	if !strings.Contains(notRenewable, "level=INFO") {
 		t.Errorf("400 logged as %q, want the non-renewable notice", notRenewable)
+	}
+}
+
+// A reload keeps a working client, so CheckToken treats an unanswerable
+// lookup as a refusal, while methods that logged in have nothing to check.
+func TestCheckToken(t *testing.T) {
+	srv := fakeBao(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	client, err := New(ctx, tokenConfig(t, srv), testLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.CheckToken(ctx); err != nil {
+		t.Errorf("CheckToken with a valid token failed: %v", err)
+	}
+
+	approle, err := New(ctx, approleConfig(t, srv, "my-role", "my-secret"), testLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	srv.Close()
+	if err := client.CheckToken(ctx); err == nil {
+		t.Error("CheckToken answered nothing against a closed server, want error")
+	}
+	if err := approle.CheckToken(ctx); err != nil {
+		t.Errorf("CheckToken checked a login method: %v", err)
+	}
+}
+
+// The daemon must come up while OpenBao is unreachable and serve once it
+// returns, so an unanswered token check only logs.
+func TestTokenAuthStartsDuringAnOutage(t *testing.T) {
+	srv := httptest.NewServer(http.NotFoundHandler())
+	srv.Close() // nothing listens, every request fails to connect
+
+	t.Setenv("BAO_ADDR", srv.URL)
+	t.Setenv("BAO_TOKEN", "test-token")
+	var cfg config.OpenBao
+	cfg.Auth.Method = config.AuthToken
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	if _, err := New(ctx, cfg, testLogger()); err != nil {
+		t.Fatalf("New failed during an outage: %v", err)
+	}
+}
+
+// A rejected token must fail authentication rather than report success and
+// 403 on every later read, which is what lets a reload with a bad rotated
+// token_file keep the previous client serving.
+func TestTokenAuthChecksTheToken(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/auth/token/lookup-self", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		if err := json.NewEncoder(w).Encode(map[string]any{"errors": []string{"permission denied"}}); err != nil {
+			t.Errorf("encoding response: %v", err)
+		}
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	_, err := New(context.Background(), tokenConfig(t, srv), testLogger())
+	if err == nil || !strings.Contains(err.Error(), "checking the OpenBao token") {
+		t.Errorf("err = %v, want the token check to fail authentication", err)
 	}
 }
 

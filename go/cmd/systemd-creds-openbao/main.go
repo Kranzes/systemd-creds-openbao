@@ -248,6 +248,12 @@ func (s *service) reload(ctx context.Context) {
 	// cancelling the context is what makes it give up.
 	giveUp := time.AfterFunc(reloadTimeout, stopClient)
 	client, err := bao.New(clientCtx, cfg.OpenBao, s.log)
+	if err == nil {
+		// Startup accepts a token it cannot verify, since there is nothing
+		// better to keep serving with. This reload has the previous client,
+		// so an unverifiable rotated token_file must not replace it.
+		err = client.CheckToken(clientCtx)
+	}
 	if !giveUp.Stop() {
 		err = fmt.Errorf("authenticating to OpenBao took longer than %s", reloadTimeout)
 	}
