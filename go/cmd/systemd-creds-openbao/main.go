@@ -279,17 +279,19 @@ func (s *service) reload(ctx context.Context) {
 		return
 	}
 
-	// Swap before stopping the previous client: in-flight requests still
-	// hold it, and its token has to stay valid for them.
-	s.cache.Swap(client, cfg.OpenBao.ServeStaleFor)
+	// The swaps are adjacent but not atomic, a request landing between them
+	// pairs the new rules with the old client. Both precede stopping the
+	// previous client, since in-flight requests still need its token.
 	s.srv.Reload(secrets.NewResolver(cfg.Credentials, s.cache), cfg.Server.ConnectionTimeout)
+	s.cache.Swap(client, cfg.OpenBao.ServeStaleFor)
 	s.stopClient()
 	// The old token stays valid until every request that can still hold the
 	// old client has finished, then it is revoked rather than left live
-	// until its TTL. The wait adds the ProbeTimeout that a last-moment 403
-	// may still spend on its token check.
+	// until its TTL. A swap-window request runs under the new timeout, so
+	// the wait covers the larger of the two, plus the ProbeTimeout that a
+	// last-moment 403 may still spend on its token check.
 	old, revokeCtx := s.client, context.WithoutCancel(ctx)
-	time.AfterFunc(s.cfg.Server.ConnectionTimeout+bao.ProbeTimeout, func() {
+	time.AfterFunc(max(s.cfg.Server.ConnectionTimeout, cfg.Server.ConnectionTimeout)+bao.ProbeTimeout, func() {
 		old.RevokeSelf(revokeCtx)
 	})
 	s.client, s.stopClient, s.cfg = client, stopClient, cfg
