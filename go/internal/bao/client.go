@@ -4,6 +4,7 @@ package bao
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -92,6 +93,18 @@ func (c *Client) authenticate(ctx context.Context) error {
 		if c.api.Token() == "" {
 			return errors.New("no OpenBao token: set openbao.auth.token_file")
 		}
+		// One quick lookup checks the token. A rejection fails the startup
+		// or reload that adopted it, so a bad rotated token_file cannot
+		// replace a working client with a broken one. An unanswered check
+		// only logs, the daemon must come up during an OpenBao outage and
+		// serve once it returns.
+		if err := c.lookupToken(ctx); err != nil {
+			var respErr *api.ResponseError
+			if errors.As(err, &respErr) && respErr.StatusCode == http.StatusForbidden {
+				return fmt.Errorf("checking the OpenBao token: %w", err)
+			}
+			c.log.Warn("cannot check the OpenBao token, continuing", "ERROR", err)
+		}
 		go c.renewStaticToken(ctx)
 		return nil
 
@@ -115,7 +128,7 @@ func (c *Client) authenticate(ctx context.Context) error {
 // forever. Transient failures back off in process rather than crash-looping
 // the daemon into systemd's start limit.
 func (c *Client) loginWithRetry(ctx context.Context, failFast bool) (*api.Secret, error) {
-	return c.withRetry(ctx, "OpenBao login", failFast, func() (*api.Secret, error) {
+	return c.withRetry(ctx, "OpenBao login", failFast, loginRetryable, func() (*api.Secret, error) {
 		return c.login(ctx)
 	})
 }
@@ -127,12 +140,19 @@ const (
 )
 
 // withRetry calls do until it succeeds or ctx is canceled, backing off between
-// attempts. With failFast a definitive rejection ends the loop instead.
-func (c *Client) withRetry(ctx context.Context, what string, failFast bool, do func() (*api.Secret, error)) (*api.Secret, error) {
+// attempts. With failFast an error canRetry rules definitive ends the loop
+// instead.
+func (c *Client) withRetry(ctx context.Context, what string, failFast bool, canRetry func(error) bool, do func() (*api.Secret, error)) (*api.Secret, error) {
 	backoff := backoffStart
 	for {
 		secret, err := do()
-		if err == nil || (failFast && !retryable(err)) {
+		if err == nil || (failFast && !canRetry(err)) {
+			return secret, err
+		}
+		// The caller gave up, so hand back the attempt's error rather than
+		// logging a retry that will never happen. The cause reaches the
+		// journal through whoever reports the failure.
+		if ctx.Err() != nil {
 			return secret, err
 		}
 		c.log.Warn(what+" failed, retrying", "ERROR", err, "RETRY_IN", backoff)
@@ -146,7 +166,7 @@ func (c *Client) withRetry(ctx context.Context, what string, failFast bool, do f
 // retryable reports whether err is transient (transport failure, 5xx,
 // throttling) rather than a definitive rejection.
 func retryable(err error) bool {
-	var tokenErr *tokenRejectedError
+	var tokenErr *tokenFaultError
 	if errors.As(err, &tokenErr) {
 		return true
 	}
@@ -160,36 +180,79 @@ func retryable(err error) bool {
 			respErr.StatusCode == http.StatusTooManyRequests
 	}
 	var urlErr *url.Error
-	return errors.As(err, &urlErr)
+	if errors.As(err, &urlErr) {
+		return true
+	}
+	// The client library hands back a bare context error when the deadline
+	// expires mid-attempt. A server that never answered says nothing about
+	// the secret, and neither does a request the caller abandoned, so
+	// neither may count as authoritative and drop what StaleCache remembers.
+	return errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)
 }
 
-// tokenRejectedError marks a read refused because OpenBao rejected the
-// daemon's own token. retryable treats it as transient. The refusal says
-// nothing about the secret, so it must not count as an authoritative answer
-// and drop what StaleCache remembers.
-type tokenRejectedError struct{ err error }
-
-func (e *tokenRejectedError) Error() string {
-	return "OpenBao rejected the daemon's token: " + e.err.Error()
+// loginRetryable is retryable for the login path. A certificate verification
+// failure reports a misconfiguration that no retry can fix, so startup fails
+// instead of backing off forever. Everywhere else the same failure is a
+// transport outage, to be waited out or covered by the stale fallback.
+func loginRetryable(err error) bool {
+	var certErr *tls.CertificateVerificationError
+	if errors.As(err, &certErr) {
+		return false
+	}
+	return retryable(err)
 }
 
-func (e *tokenRejectedError) Unwrap() error { return e.err }
+// tokenFaultError marks a read refusal that blames the daemon's token
+// rather than the secret. retryable treats it as transient, since such a
+// refusal says nothing about the secret and must not count as an
+// authoritative answer that drops what StaleCache remembers.
+type tokenFaultError struct {
+	reason string
+	err    error
+}
+
+func (e *tokenFaultError) Error() string { return e.reason + ": " + e.err.Error() }
+
+func (e *tokenFaultError) Unwrap() error { return e.err }
+
+// ProbeTimeout limits the lookup-self check classifyForbidden runs, which
+// can hold a refused request for this long past its own timeout.
+const ProbeTimeout = 5 * time.Second
+
+// lookupToken is a single lookup-self attempt that gives up after
+// ProbeTimeout. Lookup-self is allowed for any valid token, so a 403 rejects
+// the token itself.
+func (c *Client) lookupToken(ctx context.Context) error {
+	probeCtx, cancel := context.WithTimeout(ctx, ProbeTimeout)
+	defer cancel()
+	_, err := c.api.Auth().Token().LookupSelfWithContext(probeCtx)
+	return err
+}
 
 // classifyForbidden tells a 403 on the read path apart from a 403 caused by
 // the daemon's token having expired or been revoked. Lookup-self is allowed
-// for any valid token, so a 403 from it as well puts the blame on the token.
-// Any other outcome leaves the read's refusal standing as the answer about
+// for any valid token, so a 403 from it as well puts the blame on the token,
+// and only a success leaves the read's refusal standing as the answer about
 // the secret.
 func (c *Client) classifyForbidden(ctx context.Context, err error) error {
 	var respErr *api.ResponseError
 	if !errors.As(err, &respErr) || respErr.StatusCode != http.StatusForbidden {
 		return err
 	}
-	_, lookupErr := c.api.Auth().Token().LookupSelfWithContext(ctx)
-	if errors.As(lookupErr, &respErr) && respErr.StatusCode == http.StatusForbidden {
-		return &tokenRejectedError{err: err}
+	// The read may have spent nearly all of its own time before the 403
+	// arrived, so the probe gets a timeout of its own.
+	lookupErr := c.lookupToken(context.WithoutCancel(ctx))
+	if lookupErr == nil {
+		return err
 	}
-	return err
+	if errors.As(lookupErr, &respErr) && respErr.StatusCode == http.StatusForbidden {
+		return &tokenFaultError{reason: "OpenBao rejected the daemon's token", err: err}
+	}
+	// The check got no answer, so the token stands unconfirmed either way.
+	return &tokenFaultError{
+		reason: fmt.Sprintf("checking the daemon's token after the refusal failed too (%v)", lookupErr),
+		err:    err,
+	}
 }
 
 // login authenticates with the configured method. Credential files are read
@@ -200,12 +263,15 @@ func (c *Client) login(ctx context.Context) (*api.Secret, error) {
 		err  error
 	)
 	switch c.auth.Method {
+	case config.AuthAppRole:
+		data, err = c.appRoleLogin()
 	case config.AuthCert:
 		data, err = c.certLogin()
 	case config.AuthJWT:
 		data, err = c.jwtLogin()
 	default:
-		data, err = c.appRoleLogin()
+		// Unreachable, config validation rejects unknown methods.
+		return nil, fmt.Errorf("unknown auth method %q", c.auth.Method)
 	}
 	if err != nil {
 		return nil, err
@@ -275,13 +341,32 @@ func (c *Client) setLoginToken(secret *api.Secret) (*api.Secret, error) {
 	return secret, nil
 }
 
+// CheckToken verifies the configured token with one lookup, treating any
+// failure as a refusal. A reload calls it so a rotated token_file that
+// cannot be verified does not replace a working client, while startup stays
+// lenient and serves once OpenBao returns. Methods that log in prove their
+// credential at authentication, so there is nothing left to check.
+func (c *Client) CheckToken(ctx context.Context) error {
+	if c.auth.Method != config.AuthToken {
+		return nil
+	}
+	if err := c.lookupToken(ctx); err != nil {
+		return fmt.Errorf("checking the OpenBao token: %w", err)
+	}
+	return nil
+}
+
 // renewStaticToken keeps a renewable configured token alive for as long as
 // OpenBao permits. A static token cannot be re-acquired, so once renewal is
 // exhausted the daemon serves until reads start failing.
 func (c *Client) renewStaticToken(ctx context.Context) {
-	// The first renewal runs at startup, so treating an unreachable OpenBao
-	// as "not renewable" would drop renewal for the whole process lifetime.
-	secret, err := c.withRetry(ctx, "renewing the OpenBao token", true, func() (*api.Secret, error) {
+	// The first renewal runs at startup and doubles as the renewability
+	// probe. Its response carries the auth block the lifetime watcher needs,
+	// which the lookup-self check's response does not. Treating an
+	// unreachable OpenBao as "not renewable" would drop renewal for the
+	// whole process lifetime, so this is retryable rather than
+	// loginRetryable, a certificate failure here is an outage to wait out.
+	secret, err := c.withRetry(ctx, "renewing the OpenBao token", true, retryable, func() (*api.Secret, error) {
 		return c.api.Auth().Token().RenewSelfWithContext(ctx, 0)
 	})
 	if err != nil {
@@ -348,6 +433,24 @@ func (c *Client) manageTokenLifecycle(ctx context.Context, secret *api.Secret, c
 			return // ctx canceled
 		}
 		secret = next
+	}
+}
+
+// RevokeTimeout is how long a revocation request may take, so a hung OpenBao
+// cannot block the caller.
+const RevokeTimeout = 5 * time.Second
+
+// RevokeSelf revokes the token the client holds, for a client a reload or
+// shutdown abandons. A token from token_file belongs to the operator and is
+// left alone. Best effort, an unrevoked token still dies at its TTL.
+func (c *Client) RevokeSelf(ctx context.Context) {
+	if c.auth.Method == config.AuthToken {
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, RevokeTimeout)
+	defer cancel()
+	if err := c.api.Auth().Token().RevokeSelfWithContext(ctx, ""); err != nil {
+		c.log.Warn("failed to revoke the abandoned OpenBao token", "ERROR", err)
 	}
 }
 

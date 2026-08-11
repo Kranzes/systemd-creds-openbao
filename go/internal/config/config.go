@@ -98,9 +98,11 @@ type Auth struct {
 
 // Server configures the credential socket server.
 type Server struct {
-	// ConnectionTimeout is the timeout for the read from OpenBao, applied
-	// again to the write of the payload back to the service manager. A bare
-	// integer decodes as nanoseconds, so write it as "15s".
+	// ConnectionTimeout limits the read from OpenBao and the write of the
+	// credential back to the service manager. A refused read can take up to
+	// five seconds longer while the daemon checks whether its own token
+	// caused the refusal. A bare integer decodes as nanoseconds, so write
+	// it as "15s".
 	ConnectionTimeout time.Duration `toml:"connection_timeout"`
 }
 
@@ -172,8 +174,42 @@ func Replacer(values map[string]string) *strings.Replacer {
 	return strings.NewReplacer(pairs...)
 }
 
+// MatchGlob is path.Match with the backslash matched literally instead of
+// escaping the next character. Unit names carry systemd's \xNN escaping, so
+// with path.Match's own syntax the natural spelling of such a name would
+// silently match a different unit and never the real one. Unit names never
+// need the escape, systemd escapes metacharacters as \xNN before they can
+// appear in one. A name with a literal [ is matched by [[].
+func MatchGlob(pattern, name string) (bool, error) {
+	return path.Match(strings.ReplaceAll(pattern, `\`, `\\`), name)
+}
+
+// checkGlobBackslash rejects the backslash spellings whose meaning shifted
+// when MatchGlob made the backslash literal. A doubled backslash was the old
+// escape for one and now matches two, which no unit name or credential ID
+// contains. Inside a character class the backslash used to escape the next
+// character and now lands as a set member or range endpoint, which can widen
+// what the rule matches.
+func checkGlobBackslash(what, glob string) error {
+	if strings.Contains(glob, `\\`) {
+		return fmt.Errorf("%s: glob %q matches two backslashes in a row, write the backslash once", what, glob)
+	}
+	inClass := false
+	for _, r := range glob {
+		switch {
+		case r == '[':
+			inClass = true
+		case r == ']':
+			inClass = false
+		case r == '\\' && inClass:
+			return fmt.Errorf("%s: glob %q has a backslash inside [...], spell the class without it", what, glob)
+		}
+	}
+	return nil
+}
+
 func isLiteralGlob(glob string) bool {
-	return !strings.ContainsAny(glob, `*?[\`)
+	return !strings.ContainsAny(glob, "*?[")
 }
 
 // Credential maps requests to a secret in OpenBao. Rules are evaluated in file
@@ -291,7 +327,7 @@ func Parse(data []byte) (*Config, error) {
 		return nil, fmt.Errorf("unknown configuration keys: %v", undecoded)
 	}
 
-	cfg.applyDefaults()
+	cfg.applyDefaults(md)
 	if err := cfg.validate(); err != nil {
 		return nil, err
 	}
@@ -302,7 +338,7 @@ func Parse(data []byte) (*Config, error) {
 // by the option they belong to, which is what lets validate still tell an unset
 // field from a defaulted one and reject "mount with backend = raw" or "field
 // with format = json".
-func (c *Config) applyDefaults() {
+func (c *Config) applyDefaults(md toml.MetaData) {
 	if c.OpenBao.Auth.Method == "" {
 		c.OpenBao.Auth.Method = AuthToken
 	}
@@ -310,7 +346,9 @@ func (c *Config) applyDefaults() {
 		c.OpenBao.Auth.Mount = c.OpenBao.Auth.Method
 	}
 
-	if c.Server.ConnectionTimeout == 0 {
+	// Only an absent key defaults, so an explicit "0s" reaches validation
+	// and is rejected there instead of silently becoming the default.
+	if !md.IsDefined("server", "connection_timeout") {
 		c.Server.ConnectionTimeout = 15 * time.Second
 	}
 
@@ -374,13 +412,19 @@ func (c *Config) validate() error {
 	if err := checkDuration("server: connection_timeout", c.Server.ConnectionTimeout, "15s"); err != nil {
 		return err
 	}
+	// A zero timeout would let a hung OpenBao or a stuck consumer pin a
+	// request forever. More patience takes a longer timeout, not none.
+	if c.Server.ConnectionTimeout == 0 {
+		return fmt.Errorf("server: connection_timeout must be positive")
+	}
 	if err := checkDuration("openbao: serve_stale_for", c.OpenBao.ServeStaleFor, "1h"); err != nil {
 		return err
 	}
 
 	for i := range c.Credentials {
 		if err := c.Credentials[i].validate(); err != nil {
-			return fmt.Errorf("credentials[%d]: %w", i, err)
+			// Rules are numbered from one, the way -resolve reports them.
+			return fmt.Errorf("credentials rule %d: %w", i+1, err)
 		}
 	}
 	return nil
@@ -390,11 +434,17 @@ func (r *Credential) validate() error {
 	if r.Unit == "" {
 		return fmt.Errorf("unit is required (granting every unit takes an explicit \"*\")")
 	}
-	if _, err := path.Match(r.Unit, "probe"); err != nil {
+	if _, err := MatchGlob(r.Unit, "probe"); err != nil {
 		return fmt.Errorf("unit: invalid glob %q", r.Unit)
 	}
-	if _, err := path.Match(r.Credential, "probe"); err != nil {
+	if err := checkGlobBackslash("unit", r.Unit); err != nil {
+		return err
+	}
+	if _, err := MatchGlob(r.Credential, "probe"); err != nil {
 		return fmt.Errorf("credential: invalid glob %q", r.Credential)
+	}
+	if err := checkGlobBackslash("credential", r.Credential); err != nil {
+		return err
 	}
 
 	switch r.Backend {

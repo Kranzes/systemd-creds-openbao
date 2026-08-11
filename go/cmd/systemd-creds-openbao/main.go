@@ -78,6 +78,11 @@ func run() int {
 	)
 	flag.Parse()
 
+	if *showVersion {
+		fmt.Println("systemd-creds-openbao", resolvedVersion())
+		return 0
+	}
+
 	if *resolveReq {
 		if flag.NArg() != 2 {
 			fmt.Fprintln(os.Stderr, "-resolve takes exactly two arguments: UNIT CREDENTIAL")
@@ -86,11 +91,6 @@ func run() int {
 	} else if flag.NArg() > 0 {
 		fmt.Fprintf(os.Stderr, "unexpected argument %q (the configuration file is set with -config)\n", flag.Arg(0))
 		return 2
-	}
-
-	if *showVersion {
-		fmt.Println("systemd-creds-openbao", resolvedVersion())
-		return 0
 	}
 
 	var level slog.Level
@@ -116,7 +116,11 @@ func run() int {
 		return 0
 	}
 	if *resolveReq {
-		req := credserver.Request{Unit: flag.Arg(0), Credential: flag.Arg(1)}
+		req, err := credserver.NewRequest(flag.Arg(0), flag.Arg(1))
+		if err != nil {
+			log.Error("request refused", "ERROR", err)
+			return 1
+		}
 		plan, err := secrets.NewResolver(cfg.Credentials, nil).Plan(req)
 		if err != nil {
 			log.Error("request refused", "ERROR", err)
@@ -170,9 +174,15 @@ func run() int {
 		srv:        srv,
 		cache:      cache,
 		cfg:        cfg,
+		client:     client,
 		stopClient: stopClient,
 	}
-	defer func() { svc.stopClient() }()
+	defer func() {
+		svc.stopClient()
+		// Shutdown cuts in-flight requests off anyway, so the token can go
+		// right away instead of staying live until its TTL.
+		svc.client.RevokeSelf(context.WithoutCancel(ctx))
+	}()
 
 	serveClosed := make(chan struct{}, len(listeners))
 	for _, l := range listeners {
@@ -221,6 +231,7 @@ type service struct {
 	cache      *bao.StaleCache
 
 	cfg        *config.Config
+	client     *bao.Client
 	stopClient context.CancelFunc
 }
 
@@ -248,8 +259,23 @@ func (s *service) reload(ctx context.Context) {
 	// cancelling the context is what makes it give up.
 	giveUp := time.AfterFunc(reloadTimeout, stopClient)
 	client, err := bao.New(clientCtx, cfg.OpenBao, s.log)
+	if err == nil {
+		// Startup accepts a token it cannot verify, since there is nothing
+		// better to keep serving with. This reload has the previous client,
+		// so an unverifiable rotated token_file must not replace it.
+		err = client.CheckToken(clientCtx)
+	}
 	if !giveUp.Stop() {
-		err = fmt.Errorf("authenticating to OpenBao took longer than %s", reloadTimeout)
+		// The timer fired, so clientCtx is canceled and even a login that
+		// made it produced a client whose renewal is already stopping. A
+		// definitive failure that lost the race keeps its own message.
+		switch {
+		case err == nil:
+			client.RevokeSelf(context.WithoutCancel(ctx))
+			err = fmt.Errorf("authentication finished only as the reload gave up after %s", reloadTimeout)
+		case errors.Is(err, context.Canceled):
+			err = fmt.Errorf("authenticating to OpenBao took longer than %s", reloadTimeout)
+		}
 	}
 	if err != nil {
 		stopClient()
@@ -257,12 +283,22 @@ func (s *service) reload(ctx context.Context) {
 		return
 	}
 
-	// Swap before stopping the previous client: in-flight requests still
-	// hold it, and its token has to stay valid for them.
-	s.cache.Swap(client, cfg.OpenBao.ServeStaleFor)
+	// The swaps are adjacent but not atomic, a request landing between them
+	// pairs the new rules with the old client. Both precede stopping the
+	// previous client, since in-flight requests still need its token.
 	s.srv.Reload(secrets.NewResolver(cfg.Credentials, s.cache), cfg.Server.ConnectionTimeout)
+	s.cache.Swap(client, cfg.OpenBao.ServeStaleFor)
 	s.stopClient()
-	s.stopClient, s.cfg = stopClient, cfg
+	// The old token stays valid until every request that can still hold the
+	// old client has finished, then it is revoked rather than left live
+	// until its TTL. A swap-window request runs under the new timeout, so
+	// the wait covers the larger of the two, plus the ProbeTimeout that a
+	// last-moment 403 may still spend on its token check.
+	old, revokeCtx := s.client, context.WithoutCancel(ctx)
+	time.AfterFunc(max(s.cfg.Server.ConnectionTimeout, cfg.Server.ConnectionTimeout)+bao.ProbeTimeout, func() {
+		old.RevokeSelf(revokeCtx)
+	})
+	s.client, s.stopClient, s.cfg = client, stopClient, cfg
 	s.log.Info("configuration reloaded", "RULES", len(cfg.Credentials))
 }
 
@@ -290,6 +326,14 @@ func watchdogTicks(log *slog.Logger) <-chan time.Time {
 	}
 	if interval == 0 {
 		return nil
+	}
+	// A reload blocks the loop feeding the watchdog while it logs in for up
+	// to reloadTimeout and may spend RevokeTimeout more discarding a login
+	// the race threw away, pinging only at the edges. An interval inside
+	// that time gets the daemon killed mid-reload.
+	if limit := reloadTimeout + bao.RevokeTimeout; interval <= limit {
+		log.Warn("WatchdogSec= is not above what a slow reload can take, which trips the watchdog",
+			"WATCHDOG_SEC", interval, "RELOAD_LIMIT", limit)
 	}
 	return time.Tick(interval / 2)
 }

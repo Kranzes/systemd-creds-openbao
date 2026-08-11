@@ -10,9 +10,13 @@ dropping the socket or restarting the daemon:
   `role_id_file`, `secret_id_file` or `jwt_file`, including ones delivered as
   systemd credentials (the packaged unit sets `RefreshOnReload=credentials`).
   Changing the `BAO_*` environment or the listening socket takes a restart.
-- A failed reload (an invalid file, a refused login) leaves the previous
-  configuration serving. `systemctl reload` exits 0 either way, so the
-  journal is the only signal.
+- A failed reload (an invalid file, a refused login, a failed token check) leaves
+  the previous configuration serving. `systemctl reload` exits 0 either way,
+  so the journal is the only signal.
+- The token the previous configuration held is revoked shortly after the
+  reload, and on shutdown right away, so audit logs show a revoke-self per
+  replaced login. A token from `token_file` is never revoked, and a replaced
+  token is left to its TTL when the daemon stops before the revocation runs.
 
 On NixOS, `nixos-rebuild switch` applies a `settings` change as exactly this
 reload. Changing `package` or `environment` restarts the daemon instead.

@@ -18,8 +18,9 @@ RestartSec=2s
 # rotated token file is what it re-authenticates with.
 RefreshOnReload=credentials
 
-# A reload pings the watchdog only at its start and end, up to 30 seconds
-# apart, so this must stay above 30s.
+# A reload pings the watchdog only at its start and end, up to 35 seconds
+# apart, so this must stay above 35s. The daemon warns at startup when it
+# is not.
 WatchdogSec=1min
 
 DynamicUser=yes

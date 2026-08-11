@@ -83,6 +83,22 @@ func TestParsePeer(t *testing.T) {
 	}
 }
 
+func TestNewRequest(t *testing.T) {
+	if _, err := NewRequest("foobar.service", "credx"); err != nil {
+		t.Errorf("NewRequest rejected a valid request: %v", err)
+	}
+	for _, tt := range []struct{ unit, credential string }{
+		{"", "credx"},
+		{"foobar.service", ""},
+		{"foo/bar.service", "credx"},
+		{"foobar.service", "cred/x"},
+	} {
+		if req, err := NewRequest(tt.unit, tt.credential); err == nil {
+			t.Errorf("NewRequest(%q, %q) = %+v, want error", tt.unit, tt.credential, req)
+		}
+	}
+}
+
 // FuzzParsePeer holds ParsePeer to what everything downstream assumes about
 // an accepted request: globs are matched against whole names and placeholder
 // values join path segments, so neither part may be empty or contain a
