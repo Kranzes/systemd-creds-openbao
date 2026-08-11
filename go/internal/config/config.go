@@ -98,9 +98,11 @@ type Auth struct {
 
 // Server configures the credential socket server.
 type Server struct {
-	// ConnectionTimeout is the timeout for the read from OpenBao, applied
-	// again to the write of the payload back to the service manager. A bare
-	// integer decodes as nanoseconds, so write it as "15s".
+	// ConnectionTimeout limits the read from OpenBao and the write of the
+	// credential back to the service manager. A refused read can take up to
+	// five seconds longer while the daemon checks whether its own token
+	// caused the refusal. A bare integer decodes as nanoseconds, so write
+	// it as "15s".
 	ConnectionTimeout time.Duration `toml:"connection_timeout"`
 }
 
