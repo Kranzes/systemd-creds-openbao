@@ -146,4 +146,4 @@ each one expires on its own.
 
 | Key | Default | Description |
 | --- | --- | --- |
-| `connection_timeout` | `"15s"` | Timeout for each read request from OpenBao |
+| `connection_timeout` | `"15s"` | Timeout for the read from OpenBao and the write of the credential to systemd |
