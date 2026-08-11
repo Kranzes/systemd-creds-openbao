@@ -325,7 +325,7 @@ func Parse(data []byte) (*Config, error) {
 		return nil, fmt.Errorf("unknown configuration keys: %v", undecoded)
 	}
 
-	cfg.applyDefaults()
+	cfg.applyDefaults(md)
 	if err := cfg.validate(); err != nil {
 		return nil, err
 	}
@@ -336,7 +336,7 @@ func Parse(data []byte) (*Config, error) {
 // by the option they belong to, which is what lets validate still tell an unset
 // field from a defaulted one and reject "mount with backend = raw" or "field
 // with format = json".
-func (c *Config) applyDefaults() {
+func (c *Config) applyDefaults(md toml.MetaData) {
 	if c.OpenBao.Auth.Method == "" {
 		c.OpenBao.Auth.Method = AuthToken
 	}
@@ -344,7 +344,9 @@ func (c *Config) applyDefaults() {
 		c.OpenBao.Auth.Mount = c.OpenBao.Auth.Method
 	}
 
-	if c.Server.ConnectionTimeout == 0 {
+	// Only an absent key defaults, so an explicit "0s" reaches validation
+	// and is rejected there instead of silently becoming the default.
+	if !md.IsDefined("server", "connection_timeout") {
 		c.Server.ConnectionTimeout = 15 * time.Second
 	}
 
@@ -407,6 +409,11 @@ func (c *Config) validate() error {
 
 	if err := checkDuration("server: connection_timeout", c.Server.ConnectionTimeout, "15s"); err != nil {
 		return err
+	}
+	// A zero timeout would let a hung OpenBao or a stuck consumer pin a
+	// request forever. More patience takes a longer timeout, not none.
+	if c.Server.ConnectionTimeout == 0 {
+		return fmt.Errorf("server: connection_timeout must be positive")
 	}
 	if err := checkDuration("openbao: serve_stale_for", c.OpenBao.ServeStaleFor, "1h"); err != nil {
 		return err

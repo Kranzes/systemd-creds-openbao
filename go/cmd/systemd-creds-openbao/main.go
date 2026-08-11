@@ -278,15 +278,11 @@ func (s *service) reload(ctx context.Context) {
 	// The old token stays valid until every request that can still hold the
 	// old client has finished, then it is revoked rather than left live
 	// until its TTL. The wait adds the ProbeTimeout that a last-moment 403
-	// may still spend on its token check. With no connection
-	// timeout nothing stops those requests, and the token is left to expire
-	// on its own.
-	if old, timeout := s.client, s.cfg.Server.ConnectionTimeout; timeout > 0 {
-		revokeCtx := context.WithoutCancel(ctx)
-		time.AfterFunc(timeout+bao.ProbeTimeout, func() {
-			old.RevokeSelf(revokeCtx)
-		})
-	}
+	// may still spend on its token check.
+	old, revokeCtx := s.client, context.WithoutCancel(ctx)
+	time.AfterFunc(s.cfg.Server.ConnectionTimeout+bao.ProbeTimeout, func() {
+		old.RevokeSelf(revokeCtx)
+	})
 	s.client, s.stopClient, s.cfg = client, stopClient, cfg
 	s.log.Info("configuration reloaded", "RULES", len(cfg.Credentials))
 }

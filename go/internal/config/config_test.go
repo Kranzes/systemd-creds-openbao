@@ -259,6 +259,13 @@ func TestParseErrors(t *testing.T) {
 			want: "connection_timeout must not be negative",
 		},
 		{
+			// An explicit zero must be an error, not silently the default
+			// and not a request without a timeout.
+			name: "zero connection timeout",
+			toml: "[server]\nconnection_timeout = \"0s\"",
+			want: "connection_timeout must be positive",
+		},
+		{
 			// A bare integer is nanoseconds, so "15" is not "15s".
 			name: "bare integer connection timeout",
 			toml: "[server]\nconnection_timeout = 15",
