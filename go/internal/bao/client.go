@@ -154,7 +154,7 @@ func (c *Client) withRetry(ctx context.Context, what string, failFast bool, canR
 // retryable reports whether err is transient (transport failure, 5xx,
 // throttling) rather than a definitive rejection.
 func retryable(err error) bool {
-	var tokenErr *tokenRejectedError
+	var tokenErr *tokenFaultError
 	if errors.As(err, &tokenErr) {
 		return true
 	}
@@ -190,33 +190,57 @@ func loginRetryable(err error) bool {
 	return retryable(err)
 }
 
-// tokenRejectedError marks a read refused because OpenBao rejected the
-// daemon's own token. retryable treats it as transient. The refusal says
-// nothing about the secret, so it must not count as an authoritative answer
-// and drop what StaleCache remembers.
-type tokenRejectedError struct{ err error }
-
-func (e *tokenRejectedError) Error() string {
-	return "OpenBao rejected the daemon's token: " + e.err.Error()
+// tokenFaultError marks a read refusal that blames the daemon's token
+// rather than the secret. retryable treats it as transient, since such a
+// refusal says nothing about the secret and must not count as an
+// authoritative answer that drops what StaleCache remembers.
+type tokenFaultError struct {
+	reason string
+	err    error
 }
 
-func (e *tokenRejectedError) Unwrap() error { return e.err }
+func (e *tokenFaultError) Error() string { return e.reason + ": " + e.err.Error() }
+
+func (e *tokenFaultError) Unwrap() error { return e.err }
+
+// ProbeTimeout limits the lookup-self check classifyForbidden runs, which
+// can hold a refused request for this long past its own timeout.
+const ProbeTimeout = 5 * time.Second
+
+// lookupToken is a single lookup-self attempt that gives up after
+// ProbeTimeout. Lookup-self is allowed for any valid token, so a 403 rejects
+// the token itself.
+func (c *Client) lookupToken(ctx context.Context) error {
+	probeCtx, cancel := context.WithTimeout(ctx, ProbeTimeout)
+	defer cancel()
+	_, err := c.api.Auth().Token().LookupSelfWithContext(probeCtx)
+	return err
+}
 
 // classifyForbidden tells a 403 on the read path apart from a 403 caused by
 // the daemon's token having expired or been revoked. Lookup-self is allowed
-// for any valid token, so a 403 from it as well puts the blame on the token.
-// Any other outcome leaves the read's refusal standing as the answer about
+// for any valid token, so a 403 from it as well puts the blame on the token,
+// and only a success leaves the read's refusal standing as the answer about
 // the secret.
 func (c *Client) classifyForbidden(ctx context.Context, err error) error {
 	var respErr *api.ResponseError
 	if !errors.As(err, &respErr) || respErr.StatusCode != http.StatusForbidden {
 		return err
 	}
-	_, lookupErr := c.api.Auth().Token().LookupSelfWithContext(ctx)
-	if errors.As(lookupErr, &respErr) && respErr.StatusCode == http.StatusForbidden {
-		return &tokenRejectedError{err: err}
+	// The read may have spent nearly all of its own time before the 403
+	// arrived, so the probe gets a timeout of its own.
+	lookupErr := c.lookupToken(context.WithoutCancel(ctx))
+	if lookupErr == nil {
+		return err
 	}
-	return err
+	if errors.As(lookupErr, &respErr) && respErr.StatusCode == http.StatusForbidden {
+		return &tokenFaultError{reason: "OpenBao rejected the daemon's token", err: err}
+	}
+	// The check got no answer, so the token stands unconfirmed either way.
+	return &tokenFaultError{
+		reason: fmt.Sprintf("checking the daemon's token after the refusal failed too (%v)", lookupErr),
+		err:    err,
+	}
 }
 
 // login authenticates with the configured method. Credential files are read

@@ -351,7 +351,7 @@ func TestReadRejectsOversizedResponseByContentLength(t *testing.T) {
 // another with a rejected one (OpenBao never judged the path). Only the first
 // may count as authoritative and drop what StaleCache remembers.
 func TestReadForbiddenClassification(t *testing.T) {
-	var tokenValid atomic.Bool
+	var tokenValid, probeDown atomic.Bool
 	mux := http.NewServeMux()
 	forbid := func(w http.ResponseWriter) {
 		w.WriteHeader(http.StatusForbidden)
@@ -363,6 +363,10 @@ func TestReadForbiddenClassification(t *testing.T) {
 		forbid(w)
 	})
 	mux.HandleFunc("/v1/auth/token/lookup-self", func(w http.ResponseWriter, _ *http.Request) {
+		if probeDown.Load() {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
 		if !tokenValid.Load() {
 			forbid(w)
 			return
@@ -398,6 +402,14 @@ func TestReadForbiddenClassification(t *testing.T) {
 	}
 	if err == nil || !strings.Contains(err.Error(), "token") {
 		t.Errorf("error %q does not blame the token", err)
+	}
+
+	// A probe that gets no answer leaves the 403 unexplained, and an
+	// unexplained refusal must not count as authoritative.
+	probeDown.Store(true)
+	_, err = client.Read(context.Background(), kvRef("denied"))
+	if err == nil || !retryable(err) {
+		t.Errorf("403 with an unanswered token check classified authoritative (err = %v), want retryable", err)
 	}
 }
 

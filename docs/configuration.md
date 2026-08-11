@@ -37,7 +37,9 @@ Environment=BAO_CACERT=/etc/ssl/certs/openbao-ca.pem
 
 A permission denial or a missing secret still fails the request and drops the
 remembered secret, so a revoked secret cannot resurface during a later
-outage.
+outage. When the daemon cannot tell whether its own token caused a denial,
+the denial counts as an outage and the remembered secret may still be
+served.
 
 ## `[openbao.auth]`
 

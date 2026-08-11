@@ -194,7 +194,10 @@ func TestStaleCacheServesStaleWhenTheTokenIsRejected(t *testing.T) {
 	if _, err := readKV(t, c); err != nil {
 		t.Fatal(err)
 	}
-	inner.failWith = &tokenRejectedError{err: &api.ResponseError{StatusCode: http.StatusForbidden}}
+	inner.failWith = &tokenFaultError{
+		reason: "OpenBao rejected the daemon's token",
+		err:    &api.ResponseError{StatusCode: http.StatusForbidden},
+	}
 	got, err := readKV(t, c)
 	if err != nil {
 		t.Fatalf("expected stale data, got %v", err)
