@@ -262,7 +262,16 @@ func (s *service) reload(ctx context.Context) {
 		err = client.CheckToken(clientCtx)
 	}
 	if !giveUp.Stop() {
-		err = fmt.Errorf("authenticating to OpenBao took longer than %s", reloadTimeout)
+		// The timer fired, so clientCtx is canceled and even a login that
+		// made it produced a client whose renewal is already stopping. A
+		// definitive failure that lost the race keeps its own message.
+		switch {
+		case err == nil:
+			client.RevokeSelf(context.WithoutCancel(ctx))
+			err = fmt.Errorf("authentication finished only as the reload gave up after %s", reloadTimeout)
+		case errors.Is(err, context.Canceled):
+			err = fmt.Errorf("authenticating to OpenBao took longer than %s", reloadTimeout)
+		}
 	}
 	if err != nil {
 		stopClient()
