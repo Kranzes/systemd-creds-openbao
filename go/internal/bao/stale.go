@@ -83,6 +83,32 @@ func (s *StaleCache) sweepLoop(ctx context.Context) {
 	}
 }
 
+// cloneData copies data deeply enough that no caller can reach what the
+// cache holds. Maps and slices are the containers secret data nests, every
+// other JSON value is immutable to a reader.
+func cloneData(m map[string]any) map[string]any {
+	out := make(map[string]any, len(m))
+	for k, v := range m {
+		out[k] = cloneValue(v)
+	}
+	return out
+}
+
+func cloneValue(v any) any {
+	switch v := v.(type) {
+	case map[string]any:
+		return cloneData(v)
+	case []any:
+		out := make([]any, len(v))
+		for i, e := range v {
+			out[i] = cloneValue(e)
+		}
+		return out
+	default:
+		return v
+	}
+}
+
 // removeExpired drops the entries past maxAge. The caller holds mu.
 func (s *StaleCache) removeExpired() {
 	now := s.now()
@@ -120,7 +146,9 @@ func (s *StaleCache) Read(ctx context.Context, key config.SecretRef) (map[string
 	defer s.mu.Unlock()
 	if err == nil {
 		if s.maxAge > 0 && s.gen == gen {
-			s.entries[key] = entry{data: data, at: s.now()}
+			// The cache keeps its own copy, so nothing a caller does to the
+			// returned data can change what a later outage serves.
+			s.entries[key] = entry{data: cloneData(data), at: s.now()}
 		}
 		return data, nil
 	}
@@ -138,7 +166,7 @@ func (s *StaleCache) Read(ctx context.Context, key config.SecretRef) (map[string
 	}
 	if age := s.now().Sub(e.at); age <= s.maxAge {
 		s.log.Warn("read failed, serving stale secret data", "SECRET_PATH", key.Location(), "AGE", age, "ERROR", err)
-		return e.data, nil
+		return cloneData(e.data), nil
 	}
 	// Past maxAge the entry can never be served again, so it must not
 	// linger in memory.

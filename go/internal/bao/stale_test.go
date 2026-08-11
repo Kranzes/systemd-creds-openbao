@@ -275,6 +275,48 @@ func TestStaleCacheServesStaleWhenTheTokenIsRejected(t *testing.T) {
 	}
 }
 
+// The remembered response is the cache's own copy down to nested values. A
+// caller mutating what it was served must not change what the next outage
+// serves.
+func TestStaleCacheServesUnmutatedData(t *testing.T) {
+	inner := &flakyReader{data: map[string]any{
+		"password": "hunter2",
+		"metadata": map[string]any{"version": "4"},
+	}}
+	c, _ := testStaleCache(inner, time.Hour)
+
+	fresh, err := readKV(t, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fresh["password"] = "poisoned"
+
+	inner.failWith = errDown
+	stale, err := readKV(t, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stale["password"] != "hunter2" {
+		t.Fatalf("stale data = %v, want the value as fetched", stale)
+	}
+	stale["password"] = "poisoned"
+	nested, ok := stale["metadata"].(map[string]any)
+	if !ok {
+		t.Fatalf("stale data = %v, want a nested map", stale)
+	}
+	nested["version"] = "poisoned"
+	again, err := readKV(t, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again["password"] != "hunter2" {
+		t.Fatalf("stale data = %v, want the value as fetched", again)
+	}
+	if nested, ok = again["metadata"].(map[string]any); !ok || nested["version"] != "4" {
+		t.Fatalf("nested stale data = %v, want the value as fetched", again["metadata"])
+	}
+}
+
 func TestStaleCacheDisabledRetainsNothing(t *testing.T) {
 	inner := &flakyReader{data: map[string]any{"password": "hunter2"}}
 	c, _ := testStaleCache(inner, 0)
