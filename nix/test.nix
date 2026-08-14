@@ -153,6 +153,12 @@ in
           )
 
 
+      def openbao_is_active(_last_try):
+          # Unsealed is not writable: a restarted raft node rejoins a standby.
+          status, output = machine.execute("bao status")
+          return status == 0 and json.loads(output).get("is_self", True)
+
+
       start_all()
       machine.wait_for_unit("multi-user.target")
 
@@ -160,9 +166,7 @@ in
           machine.wait_for_unit("openbao.service")
           machine.wait_for_open_port(8200)
           init_output = json.loads(machine.succeed("bao operator init"))
-          # The static seal auto-unseals after init. `bao status` exits zero
-          # once it has.
-          machine.wait_until_succeeds("bao status")
+          retry(openbao_is_active)
           machine.succeed(f"bao login {init_output['root_token']}")
           machine.succeed(f"umask 077; printf %s {init_output['root_token']} > /run/keys/openbao-token")
 
@@ -277,7 +281,7 @@ in
       with subtest("Fresh reads resume once OpenBao is back"):
           machine.succeed("systemctl start openbao.service")
           machine.wait_for_open_port(8200)
-          machine.wait_until_succeeds("bao status")
+          retry(openbao_is_active)
           # Rotating the secret is what proves the next read is fresh, not
           # the remembered response again.
           machine.succeed("bao kv put -mount=kv systemd/creds-test fallback=rotated-value")
