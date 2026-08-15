@@ -154,6 +154,10 @@ func run() int {
 	client, err := bao.New(clientCtx, cfg.OpenBao, log)
 	if err != nil {
 		stopClient()
+		if ctx.Err() != nil {
+			log.Info("shutting down on signal")
+			return 0
+		}
 		log.Error("failed to set up OpenBao client", "ERROR", err)
 		return 1
 	}

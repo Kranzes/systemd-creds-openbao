@@ -1,5 +1,12 @@
 # Operations
 
+## Starting
+
+The service counts as started only once the daemon has authenticated. A login
+that fails on an outage (OpenBao down, sealed, unreachable) is retried for as
+long as it takes, so `systemctl start` blocks until then (`--no-block` returns
+at once).
+
 ## Reloading
 
 `systemctl reload systemd-creds-openbao` re-reads the configuration file without
@@ -19,9 +26,8 @@ dropping the socket or restarting the daemon:
   token is left to its TTL when the daemon stops before the revocation runs.
 
 On NixOS, `nixos-rebuild switch` applies a `settings` change as exactly this
-reload. Changing `package` or `environment` restarts the daemon instead.
-
-The service counts as started only once the daemon has authenticated.
+reload. Changing `package` or `environment` restarts the daemon instead, and
+the switch blocks until it has authenticated ([Starting](#starting)).
 
 ## Failure behavior
 

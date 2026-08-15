@@ -11,6 +11,11 @@ Wants=network-online.target
 # sends.
 Type=notify-reload
 ExecStart=systemd-creds-openbao -config /etc/systemd-creds-openbao/config.toml
+# A login that fails on an outage (OpenBao down, sealed, unreachable) is
+# retried in process for as long as it takes, and staying in activating
+# is what lets consumers order after the service. The same setting would
+# also time reloads, which the daemon bounds itself, backed by the watchdog.
+TimeoutStartSec=infinity
 Restart=on-failure
 RestartSec=2s
 
