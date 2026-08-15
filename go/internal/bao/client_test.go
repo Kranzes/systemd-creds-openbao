@@ -618,21 +618,28 @@ func TestCertLoginWithoutClientCert(t *testing.T) {
 	}
 }
 
-// A login that cannot verify the server certificate must fail the unit, not
-// back off forever with the cause buried in retry warnings.
-func TestLoginFailsFastOnCertificateVerificationFailure(t *testing.T) {
+// An authentication that cannot verify the server certificate must fail the
+// unit, not back off forever with the cause buried in retry warnings, whether
+// it is a login or the token check.
+func TestAuthFailsFastOnCertificateVerificationFailure(t *testing.T) {
 	srv := httptest.NewTLSServer(http.NotFoundHandler())
 	t.Cleanup(srv.Close)
 
 	// No BAO_CACERT, so the self-signed server certificate cannot verify.
-	cfg := approleConfig(t, srv, "my-role", "my-secret")
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	for name, cfg := range map[string]config.OpenBao{
+		"approle": approleConfig(t, srv, "my-role", "my-secret"),
+		"token":   tokenConfig(t, srv),
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
 
-	_, err := New(ctx, cfg, testLogger())
-	var certErr *tls.CertificateVerificationError
-	if !errors.As(err, &certErr) {
-		t.Errorf("err = %v, want a certificate verification failure without retries", err)
+			_, err := New(ctx, cfg, testLogger())
+			var certErr *tls.CertificateVerificationError
+			if !errors.As(err, &certErr) {
+				t.Errorf("err = %v, want a certificate verification failure without retries", err)
+			}
+		})
 	}
 }
 
@@ -859,49 +866,48 @@ func TestStaticTokenRejectionIsNotConfusedWithNonRenewable(t *testing.T) {
 	}
 }
 
-// A reload keeps a working client, so CheckToken treats an unanswerable
-// lookup as a refusal, while methods that logged in have nothing to check.
-func TestCheckToken(t *testing.T) {
-	srv := fakeBao(t)
+// An unanswered token check is retried like a failing login, so READY=1
+// means OpenBao confirmed the token whichever method is configured.
+func TestTokenAuthRetriesAnUnansweredCheck(t *testing.T) {
+	var attempts atomic.Int32
+	mux := http.NewServeMux()
+	t.Setenv("BAO_MAX_RETRIES", "0") // exercise our retry, not the api client's
+	mux.HandleFunc("/v1/auth/token/lookup-self", func(w http.ResponseWriter, _ *http.Request) {
+		if attempts.Add(1) == 1 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		if err := json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"id": "t"}}); err != nil {
+			t.Errorf("encoding response: %v", err)
+		}
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	client, err := New(ctx, tokenConfig(t, srv), testLogger())
-	if err != nil {
-		t.Fatal(err)
+	if _, err := New(ctx, tokenConfig(t, srv), testLogger()); err != nil {
+		t.Fatalf("New failed on a 503 from the token check: %v", err)
 	}
-	if err := client.CheckToken(ctx); err != nil {
-		t.Errorf("CheckToken with a valid token failed: %v", err)
-	}
-
-	approle, err := New(ctx, approleConfig(t, srv, "my-role", "my-secret"), testLogger())
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	srv.Close()
-	if err := client.CheckToken(ctx); err == nil {
-		t.Error("CheckToken answered nothing against a closed server, want error")
-	}
-	if err := approle.CheckToken(ctx); err != nil {
-		t.Errorf("CheckToken checked a login method: %v", err)
+	if n := attempts.Load(); n < 2 {
+		t.Errorf("token check attempted %d time(s), want a retry after the 503", n)
 	}
 }
 
-// The daemon must come up while OpenBao is unreachable and serve once it
-// returns, so an unanswered token check only logs.
-func TestTokenAuthStartsDuringAnOutage(t *testing.T) {
+// While OpenBao is unreachable the check keeps New waiting, so the daemon
+// does not report ready and serve empty credentials during an outage.
+func TestTokenAuthWaitsOutAnOutage(t *testing.T) {
 	srv := httptest.NewServer(http.NotFoundHandler())
 	srv.Close() // nothing listens, every request fails to connect
 
-	t.Setenv("BAO_ADDR", srv.URL)
-	t.Setenv("BAO_TOKEN", "test-token")
-	var cfg config.OpenBao
-	cfg.Auth.Method = config.AuthToken
-
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-	if _, err := New(ctx, cfg, testLogger()); err != nil {
-		t.Fatalf("New failed during an outage: %v", err)
+	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+	defer cancel()
+	_, err := New(ctx, tokenConfig(t, srv), testLogger())
+	if ctx.Err() == nil {
+		t.Fatalf("New returned (err = %v) before its context ended, want it to wait", err)
+	}
+	if err == nil {
+		t.Error("New succeeded against a closed server")
 	}
 }
 

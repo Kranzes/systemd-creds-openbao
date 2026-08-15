@@ -93,17 +93,16 @@ func (c *Client) authenticate(ctx context.Context) error {
 		if c.api.Token() == "" {
 			return errors.New("no OpenBao token: set openbao.auth.token_file")
 		}
-		// One quick lookup checks the token. A rejection fails the startup
-		// or reload that adopted it, so a bad rotated token_file cannot
-		// replace a working client with a broken one. An unanswered check
-		// only logs, the daemon must come up during an OpenBao outage and
-		// serve once it returns.
-		if err := c.lookupToken(ctx); err != nil {
-			var respErr *api.ResponseError
-			if errors.As(err, &respErr) && respErr.StatusCode == http.StatusForbidden {
-				return fmt.Errorf("checking the OpenBao token: %w", err)
-			}
-			c.log.Warn("cannot check the OpenBao token, continuing", "ERROR", err)
+		// Lookup-self checks the token. A rejection fails the startup or
+		// reload that adopted it, so a bad rotated token_file cannot replace
+		// a working client with a broken one. An unanswered check is waited
+		// out like a failing login, under the client's own timeout and the
+		// same rule for what a retry can fix, so READY=1 means the same for
+		// every method, a token OpenBao has confirmed.
+		if _, err := c.withRetry(ctx, "OpenBao token check", true, loginRetryable, func() (*api.Secret, error) {
+			return c.api.Auth().Token().LookupSelfWithContext(ctx)
+		}); err != nil {
+			return fmt.Errorf("checking the OpenBao token: %w", err)
 		}
 		go c.renewStaticToken(ctx)
 		return nil
@@ -190,10 +189,11 @@ func retryable(err error) bool {
 	return errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)
 }
 
-// loginRetryable is retryable for the login path. A certificate verification
-// failure reports a misconfiguration that no retry can fix, so startup fails
-// instead of backing off forever. Everywhere else the same failure is a
-// transport outage, to be waited out or covered by the stale fallback.
+// loginRetryable is retryable for the login path and the startup token check.
+// A certificate verification failure reports a misconfiguration that no retry
+// can fix, so startup fails instead of backing off forever. Everywhere else
+// the same failure is a transport outage, to be waited out or covered by the
+// stale fallback.
 func loginRetryable(err error) bool {
 	var certErr *tls.CertificateVerificationError
 	if errors.As(err, &certErr) {
@@ -339,21 +339,6 @@ func (c *Client) setLoginToken(secret *api.Secret) (*api.Secret, error) {
 	c.api.SetToken(token)
 	c.log.Info("authenticated to OpenBao", "METHOD", c.auth.Method)
 	return secret, nil
-}
-
-// CheckToken verifies the configured token with one lookup, treating any
-// failure as a refusal. A reload calls it so a rotated token_file that
-// cannot be verified does not replace a working client, while startup stays
-// lenient and serves once OpenBao returns. Methods that log in prove their
-// credential at authentication, so there is nothing left to check.
-func (c *Client) CheckToken(ctx context.Context) error {
-	if c.auth.Method != config.AuthToken {
-		return nil
-	}
-	if err := c.lookupToken(ctx); err != nil {
-		return fmt.Errorf("checking the OpenBao token: %w", err)
-	}
-	return nil
 }
 
 // renewStaticToken keeps a renewable configured token alive for as long as

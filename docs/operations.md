@@ -34,9 +34,10 @@ dropping the socket or restarting the daemon:
   `role_id_file`, `secret_id_file` or `jwt_file`, including ones delivered as
   systemd credentials (the packaged unit sets `RefreshOnReload=credentials`).
   Changing the `BAO_*` environment or the listening socket takes a restart.
-- A failed reload (an invalid file, a refused login, a failed token check) leaves
-  the previous configuration serving. `systemctl reload` exits 0 either way,
-  so the journal is the only signal.
+- A failed reload (an invalid file, a rejected login or token, an outage that
+  outlasts the 30 seconds a reload waits) leaves the previous configuration
+  serving. `systemctl reload` exits 0 either way, so the journal is the only
+  signal.
 - The token the previous configuration held is revoked shortly after the
   reload, and on shutdown right away, so audit logs show a revoke-self per
   replaced login. A token from `token_file` is never revoked, and a replaced

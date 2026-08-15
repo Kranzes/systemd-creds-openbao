@@ -58,9 +58,9 @@ func resolvedVersion() string {
 	return bi.Main.Version
 }
 
-// reloadTimeout limits the OpenBao login a reload performs. The manager blocks
-// on the READY=1 that ends a reload, so without it an OpenBao outage would
-// take down a daemon that is serving fine.
+// reloadTimeout limits the OpenBao authentication a reload performs. The
+// manager blocks on the READY=1 that ends a reload, so without it an OpenBao
+// outage would take down a daemon that is serving fine.
 const reloadTimeout = 30 * time.Second
 
 func main() {
@@ -142,7 +142,7 @@ func run() int {
 	defer signal.Stop(reload)
 
 	// Adopting the sockets first fails a misconfigured socket unit right away,
-	// since logging in retries a transient failure indefinitely.
+	// since authenticating retries a transient failure indefinitely.
 	listeners, err := listen()
 	if err != nil {
 		log.Error("failed to listen", "ERROR", err)
@@ -259,16 +259,10 @@ func (s *service) reload(ctx context.Context) {
 	}
 
 	clientCtx, stopClient := context.WithCancel(ctx)
-	// bao.New retries a failing login for as long as its context lives, so
-	// cancelling the context is what makes it give up.
+	// bao.New retries a failing authentication for as long as its context
+	// lives, so cancelling the context is what makes it give up.
 	giveUp := time.AfterFunc(reloadTimeout, stopClient)
 	client, err := bao.New(clientCtx, cfg.OpenBao, s.log)
-	if err == nil {
-		// Startup accepts a token it cannot verify, since there is nothing
-		// better to keep serving with. This reload has the previous client,
-		// so an unverifiable rotated token_file must not replace it.
-		err = client.CheckToken(clientCtx)
-	}
 	if !giveUp.Stop() {
 		// The timer fired, so clientCtx is canceled and even a login that
 		// made it produced a client whose renewal is already stopping. A
@@ -331,10 +325,10 @@ func watchdogTicks(log *slog.Logger) <-chan time.Time {
 	if interval == 0 {
 		return nil
 	}
-	// A reload blocks the loop feeding the watchdog while it logs in for up
-	// to reloadTimeout and may spend RevokeTimeout more discarding a login
-	// the race threw away, pinging only at the edges. An interval inside
-	// that time gets the daemon killed mid-reload.
+	// A reload blocks the loop feeding the watchdog while it authenticates
+	// for up to reloadTimeout and may spend RevokeTimeout more discarding a
+	// login that the race threw away, pinging only at the edges. An interval
+	// inside that time gets the daemon killed mid-reload.
 	if limit := reloadTimeout + bao.RevokeTimeout; interval <= limit {
 		log.Warn("WatchdogSec= is not above what a slow reload can take, which trips the watchdog",
 			"WATCHDOG_SEC", interval, "RELOAD_LIMIT", limit)
