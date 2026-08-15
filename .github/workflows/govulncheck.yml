@@ -7,6 +7,7 @@ on:
   pull_request:
     paths:
       - go/**
+      - lon.lock
   workflow_dispatch:
 
 concurrency:
