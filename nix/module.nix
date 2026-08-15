@@ -109,6 +109,8 @@ in
   };
 
   config = lib.mkIf cfg.enable {
+    environment.systemPackages = [ cfg.package ];
+
     systemd.packages = [ cfg.package ];
 
     # The path the packaged unit's ExecStart reads, and the CLI's default,
