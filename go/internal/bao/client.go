@@ -25,12 +25,25 @@ type Client struct {
 	api  *api.Client
 	auth config.Auth
 	log  *slog.Logger
+	// report, when set, is told about each authentication attempt that New is
+	// going to retry.
+	report func(string)
+}
+
+// Option adjusts the client New builds.
+type Option func(*Client)
+
+// ReportRetries has New hand report one line per failed authentication
+// attempt that it is going to retry, naming what failed, the wait before the next
+// attempt, and the cause.
+func ReportRetries(report func(string)) Option {
+	return func(c *Client) { c.report = report }
 }
 
 // New builds a client, authenticates it, and keeps the token fresh in the
 // background until ctx is canceled. The connection (address, TLS, namespace,
 // timeout) comes only from the BAO_*/VAULT_* environment variables.
-func New(ctx context.Context, cfg config.OpenBao, log *slog.Logger) (*Client, error) {
+func New(ctx context.Context, cfg config.OpenBao, log *slog.Logger, opts ...Option) (*Client, error) {
 	apiCfg := api.DefaultConfig()
 	if apiCfg.Error != nil {
 		return nil, fmt.Errorf("reading client environment: %w", apiCfg.Error)
@@ -48,6 +61,9 @@ func New(ctx context.Context, cfg config.OpenBao, log *slog.Logger) (*Client, er
 	}
 
 	c := &Client{api: ac, auth: cfg.Auth, log: log}
+	for _, opt := range opts {
+		opt(c)
+	}
 	if err := c.authenticate(ctx); err != nil {
 		return nil, err
 	}
@@ -99,7 +115,7 @@ func (c *Client) authenticate(ctx context.Context) error {
 		// out like a failing login, under the client's own timeout and the
 		// same rule for what a retry can fix, so READY=1 means the same for
 		// every method, a token OpenBao has confirmed.
-		if _, err := c.withRetry(ctx, "OpenBao token check", true, loginRetryable, func() (*api.Secret, error) {
+		if _, err := c.withRetry(ctx, "OpenBao token check", true, loginRetryable, c.report, func() (*api.Secret, error) {
 			return c.api.Auth().Token().LookupSelfWithContext(ctx)
 		}); err != nil {
 			return fmt.Errorf("checking the OpenBao token: %w", err)
@@ -108,7 +124,7 @@ func (c *Client) authenticate(ctx context.Context) error {
 		return nil
 
 	case config.AuthAppRole, config.AuthCert, config.AuthJWT:
-		secret, err := c.loginWithRetry(ctx, true)
+		secret, err := c.loginWithRetry(ctx, true, c.report)
 		if err != nil {
 			return fmt.Errorf("%s login: %w", c.auth.Method, err)
 		}
@@ -126,8 +142,8 @@ func (c *Client) authenticate(ctx context.Context) error {
 // on a definitive rejection, failing the unit at startup instead of retrying
 // forever. Transient failures back off in process rather than crash-looping
 // the daemon into systemd's start limit.
-func (c *Client) loginWithRetry(ctx context.Context, failFast bool) (*api.Secret, error) {
-	return c.withRetry(ctx, "OpenBao login", failFast, loginRetryable, func() (*api.Secret, error) {
+func (c *Client) loginWithRetry(ctx context.Context, failFast bool, report func(string)) (*api.Secret, error) {
+	return c.withRetry(ctx, "OpenBao login", failFast, loginRetryable, report, func() (*api.Secret, error) {
 		return c.login(ctx)
 	})
 }
@@ -140,8 +156,8 @@ const (
 
 // withRetry calls do until it succeeds or ctx is canceled, backing off between
 // attempts. With failFast an error canRetry rules definitive ends the loop
-// instead.
-func (c *Client) withRetry(ctx context.Context, what string, failFast bool, canRetry func(error) bool, do func() (*api.Secret, error)) (*api.Secret, error) {
+// instead. Every retry is logged, and handed to report when one is given.
+func (c *Client) withRetry(ctx context.Context, what string, failFast bool, canRetry func(error) bool, report func(string), do func() (*api.Secret, error)) (*api.Secret, error) {
 	backoff := backoffStart
 	for {
 		secret, err := do()
@@ -155,6 +171,9 @@ func (c *Client) withRetry(ctx context.Context, what string, failFast bool, canR
 			return secret, err
 		}
 		c.log.Warn(what+" failed, retrying", "ERROR", err, "RETRY_IN", backoff)
+		if report != nil {
+			report(fmt.Sprintf("%s failed, retrying in %s: %s", what, backoff, oneLine(err)))
+		}
 		if !sleep(ctx, backoff) {
 			return nil, ctx.Err()
 		}
@@ -351,7 +370,7 @@ func (c *Client) renewStaticToken(ctx context.Context) {
 	// unreachable OpenBao as "not renewable" would drop renewal for the
 	// whole process lifetime, so this is retryable rather than
 	// loginRetryable, a certificate failure here is an outage to wait out.
-	secret, err := c.withRetry(ctx, "renewing the OpenBao token", true, retryable, func() (*api.Secret, error) {
+	secret, err := c.withRetry(ctx, "renewing the OpenBao token", true, retryable, nil, func() (*api.Secret, error) {
 		return c.api.Auth().Token().RenewSelfWithContext(ctx, 0)
 	})
 	if err != nil {
@@ -413,7 +432,7 @@ func (c *Client) manageTokenLifecycle(ctx context.Context, secret *api.Secret, c
 			c.log.Error("OpenBao token is about to expire and cannot be re-acquired. Provide a fresh token and restart")
 			return
 		}
-		next, err := c.loginWithRetry(ctx, false)
+		next, err := c.loginWithRetry(ctx, false, nil)
 		if err != nil {
 			return // ctx canceled
 		}
@@ -480,6 +499,23 @@ func sleep(ctx context.Context, d time.Duration) bool {
 	case <-timer.C:
 		return true
 	}
+}
+
+// statusMax bounds a reported line. The service manager drops a notification
+// over PIPE_BUF (4096) bytes whole, and a response that is not JSON, such as
+// the error page of a proxy in front of OpenBao, lands in the error text
+// whole.
+const statusMax = 1024
+
+// oneLine flattens an error for a status line. The client library's errors
+// span several lines, and STATUS= takes a single line of valid UTF-8, or the
+// service manager ignores it.
+func oneLine(err error) string {
+	line := strings.Join(strings.Fields(err.Error()), " ")
+	if len(line) > statusMax {
+		line = line[:statusMax] + "..."
+	}
+	return strings.ToValidUTF8(line, "")
 }
 
 // valueOrFile returns the literal value, or the contents of file when one is

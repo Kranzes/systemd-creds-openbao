@@ -24,6 +24,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/kranzes/systemd-creds-openbao/go/internal/config"
 )
@@ -643,6 +644,67 @@ func TestAuthFailsFastOnCertificateVerificationFailure(t *testing.T) {
 	}
 }
 
+// Each retried login attempt is reported as one line the daemon can hand to
+// STATUS=, which cannot carry the newlines the client library's errors have.
+func TestReportRetries(t *testing.T) {
+	var attempts atomic.Int32
+	mux := http.NewServeMux()
+	t.Setenv("BAO_MAX_RETRIES", "0") // exercise our retry, not the api client's
+	mux.HandleFunc("/v1/auth/approle/login", func(w http.ResponseWriter, _ *http.Request) {
+		if attempts.Add(1) == 1 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			if err := json.NewEncoder(w).Encode(map[string]any{"errors": []string{"Vault is sealed"}}); err != nil {
+				t.Errorf("encoding response: %v", err)
+			}
+			return
+		}
+		if err := json.NewEncoder(w).Encode(map[string]any{
+			"auth": map[string]any{"client_token": "approle-token"},
+		}); err != nil {
+			t.Errorf("encoding response: %v", err)
+		}
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	var reported []string
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	_, err := New(ctx, approleConfig(t, srv, "role", "secret"), testLogger(), ReportRetries(func(line string) {
+		reported = append(reported, line)
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reported) != 1 {
+		t.Fatalf("reported = %q, want one line for the one retried attempt", reported)
+	}
+	line := reported[0]
+	if !strings.HasPrefix(line, "OpenBao login failed, retrying in 1s: ") || !strings.Contains(line, "Vault is sealed") {
+		t.Errorf("reported %q, want the wait and the cause", line)
+	}
+	if strings.Contains(line, "\n") {
+		t.Errorf("reported %q spans lines", line)
+	}
+}
+
+// A response that is not JSON, a proxy's error page, lands in the error text
+// whole, so the line is cut to what fits one notification, without leaving a
+// broken rune the service manager would reject the line for.
+func TestOneLineBoundsTheStatus(t *testing.T) {
+	err := errors.New("Code: 502. Raw Message:\n\n<html>" + strings.Repeat("\u00e9", 4096) + "</html>")
+	line := oneLine(err)
+	if len(line) > statusMax+len("...") {
+		t.Errorf("len(oneLine) = %d, want at most %d", len(line), statusMax+len("..."))
+	}
+	if !strings.HasSuffix(line, "...") || !utf8.ValidString(line) {
+		t.Errorf("oneLine = %q, want a cut marked with ... in valid UTF-8", line)
+	}
+	if got := oneLine(errors.New("short\nerror")); got != "short error" {
+		t.Errorf("oneLine(short) = %q, want it flattened and whole", got)
+	}
+}
+
 func TestStaticTokenRenewalProbe(t *testing.T) {
 	probed := make(chan struct{}, 1)
 	mux := http.NewServeMux()
@@ -897,14 +959,22 @@ func TestTokenAuthRetriesAnUnansweredCheck(t *testing.T) {
 // While OpenBao is unreachable the check keeps New waiting, so the daemon
 // does not report ready and serve empty credentials during an outage.
 func TestTokenAuthWaitsOutAnOutage(t *testing.T) {
+	t.Setenv("BAO_MAX_RETRIES", "0") // exercise our retry, not the api client's
 	srv := httptest.NewServer(http.NotFoundHandler())
 	srv.Close() // nothing listens, every request fails to connect
 
-	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	_, err := New(ctx, tokenConfig(t, srv), testLogger())
-	if ctx.Err() == nil {
-		t.Fatalf("New returned (err = %v) before its context ended, want it to wait", err)
+	var retries atomic.Int32
+	_, err := New(ctx, tokenConfig(t, srv), testLogger(), ReportRetries(func(string) {
+		// The second retry shows the loop going on past the first backoff,
+		// which is as much of the wait as the test needs to see.
+		if retries.Add(1) == 2 {
+			cancel()
+		}
+	}))
+	if n := retries.Load(); n < 2 || ctx.Err() == nil {
+		t.Fatalf("New returned (err = %v) after %d retried attempt(s), want it to keep retrying until its context ends", err, n)
 	}
 	if err == nil {
 		t.Error("New succeeded against a closed server")

@@ -151,7 +151,8 @@ func run() int {
 
 	// The client's context governs its token renewal. A reload cancels it.
 	clientCtx, stopClient := context.WithCancel(ctx)
-	client, err := bao.New(clientCtx, cfg.OpenBao, log)
+	notify(log, "STATUS=authenticating with "+cfg.OpenBao.Auth.Method)
+	client, err := bao.New(clientCtx, cfg.OpenBao, log, retryStatus(log))
 	if err != nil {
 		stopClient()
 		if ctx.Err() != nil {
@@ -262,7 +263,8 @@ func (s *service) reload(ctx context.Context) {
 	// bao.New retries a failing authentication for as long as its context
 	// lives, so cancelling the context is what makes it give up.
 	giveUp := time.AfterFunc(reloadTimeout, stopClient)
-	client, err := bao.New(clientCtx, cfg.OpenBao, s.log)
+	notify(s.log, "STATUS=authenticating with "+cfg.OpenBao.Auth.Method)
+	client, err := bao.New(clientCtx, cfg.OpenBao, s.log, retryStatus(s.log))
 	if !giveUp.Stop() {
 		// The timer fired, so clientCtx is canceled and even a login that
 		// made it produced a client whose renewal is already stopping. A
@@ -342,6 +344,15 @@ func notify(log *slog.Logger, state string) {
 	if _, err := daemon.SdNotify(false, state); err != nil {
 		log.Warn("failed to notify the service manager", "ERROR", err)
 	}
+}
+
+// retryStatus shows each authentication attempt that the client is waiting to
+// retry as the unit's status, so `systemctl status` says why the service is
+// still activating, or what a reload is stuck on.
+func retryStatus(log *slog.Logger) bao.Option {
+	return bao.ReportRetries(func(line string) {
+		notify(log, "STATUS="+line)
+	})
 }
 
 // describePlan renders a resolution for -resolve. The location is what the
