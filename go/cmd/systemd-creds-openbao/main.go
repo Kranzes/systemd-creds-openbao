@@ -311,9 +311,12 @@ func (s *service) status() string {
 }
 
 // notifyReady reports readiness along with the status summary. The watchdog
-// reset makes it the closing edge of a reload.
+// reset makes it the closing edge of a reload. The restart counter is kept
+// across automatic restarts, so resetting it here confines the unit's growing
+// restart delay to consecutive failed starts, and a crash long after a
+// rejected login is retried at the first step again.
 func (s *service) notifyReady() {
-	notify(s.log, daemon.SdNotifyReady+"\n"+s.status()+"\n"+daemon.SdNotifyWatchdog)
+	notify(s.log, daemon.SdNotifyReady+"\n"+s.status()+"\n"+daemon.SdNotifyWatchdog+"\nRESTART_RESET=1")
 }
 
 // watchdogTicks returns ticks at half the WatchdogSec= interval the service

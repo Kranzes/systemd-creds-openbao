@@ -16,8 +16,15 @@ ExecStart=systemd-creds-openbao -config /etc/systemd-creds-openbao/config.toml
 # is what lets consumers order after the service. The same setting would
 # also time reloads, which the daemon bounds itself, backed by the watchdog.
 TimeoutStartSec=infinity
+# When OpenBao rejects a login outright the daemon exits, and the next start
+# re-reads the credential, so a corrected one is picked up on its own. The
+# backoff keeps a wrong one from hitting the login endpoint every 2s, and
+# the daemon resets it with RESTART_RESET=1 once ready, so it grows across
+# consecutive failed starts only.
 Restart=on-failure
 RestartSec=2s
+RestartSteps=5
+RestartMaxDelaySec=1min
 
 # Re-provision LoadCredential= before the reload, so the daemon's own
 # rotated token file is what it re-authenticates with.

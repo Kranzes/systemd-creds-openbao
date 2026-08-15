@@ -5,7 +5,13 @@
 The service counts as started only once the daemon has authenticated. A login
 that fails on an outage (OpenBao down, sealed, unreachable) is retried for as
 long as it takes, so `systemctl start` blocks until then (`--no-block` returns
-at once).
+at once). A login that OpenBao rejects outright (a wrong secret ID, an invalid
+token, a server certificate that does not verify) fails the service instead,
+and systemd keeps restarting it with a delay growing to a minute, so a
+corrected credential is picked up without further action. OpenBao's user
+lockout, on by default for `approle`, locks the role after five rejected
+logins, which those restarts reach within a minute, so a corrected secret ID
+can still be refused for the fifteen minutes the lockout lasts.
 
 A consumer that starts before the daemon is ready blocks in its `LoadCredential=`
 fetch until the daemon has authenticated. A `Type=exec` or `Type=notify`
