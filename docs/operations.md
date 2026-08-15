@@ -7,6 +7,23 @@ that fails on an outage (OpenBao down, sealed, unreachable) is retried for as
 long as it takes, so `systemctl start` blocks until then (`--no-block` returns
 at once).
 
+A consumer that starts before the daemon is ready blocks in its `LoadCredential=`
+fetch until the daemon has authenticated. A `Type=exec` or `Type=notify`
+consumer fails when its own start timeout runs out first, a `Type=simple` one
+counts as running while it waits. To wait for as long as it takes, order the
+consumer after the service:
+
+```ini
+[Unit]
+Wants=systemd-creds-openbao.service
+After=systemd-creds-openbao.service
+```
+
+This orders it after `network-online.target` as well. `Requires=` in place of
+`Wants=` fails the consumer along with a rejected login, and also restarts it
+whenever the daemon restarts, on a package upgrade or after a crash as much as
+on `systemctl restart`.
+
 ## Reloading
 
 `systemctl reload systemd-creds-openbao` re-reads the configuration file without
@@ -54,7 +71,8 @@ path it reads, without triggering one.
 
 Secrets remembered for [`serve_stale_for`](configuration.md#openbao) survive
 a reload but not a restart, so the fallback covers a machine that fetched the
-credential before the outage, not one that boots during it.
+credential before the outage, not one that boots during it. Consumers on that
+machine wait for the daemon instead ([Starting](#starting)).
 
 ### Failing closed
 
