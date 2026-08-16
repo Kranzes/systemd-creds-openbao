@@ -156,10 +156,13 @@ const (
 
 // withRetry calls do until it succeeds or ctx is canceled, backing off between
 // attempts. With failFast an error canRetry rules definitive ends the loop
-// instead. Every retry is logged, and handed to report when one is given.
+// instead. Every retry is logged, and handed to report when one is given,
+// with the attempt count and how long the loop has been at it, so a status
+// line that is renewed once per attempt still says whether it is moving.
 func (c *Client) withRetry(ctx context.Context, what string, failFast bool, canRetry func(error) bool, report func(string), do func() (*api.Secret, error)) (*api.Secret, error) {
 	backoff := backoffStart
-	for {
+	start := time.Now()
+	for attempt := 1; ; attempt++ {
 		secret, err := do()
 		if err == nil || (failFast && !canRetry(err)) {
 			return secret, err
@@ -170,9 +173,14 @@ func (c *Client) withRetry(ctx context.Context, what string, failFast bool, canR
 		if ctx.Err() != nil {
 			return secret, err
 		}
-		c.log.Warn(what+" failed, retrying", "ERROR", err, "RETRY_IN", backoff)
+		failingFor := time.Since(start).Round(time.Second)
+		c.log.Warn(what+" failed, retrying", "ERROR", err, "RETRY_IN", backoff, "ATTEMPT", attempt, "FAILING_FOR", failingFor)
 		if report != nil {
-			report(fmt.Sprintf("%s failed, retrying in %s: %s", what, backoff, oneLine(err)))
+			times := "failed"
+			if attempt > 1 {
+				times = fmt.Sprintf("failed %d times in %s", attempt, failingFor)
+			}
+			report(fmt.Sprintf("%s %s, retrying in %s: %s", what, times, backoff, oneLine(err)))
 		}
 		if !sleep(ctx, backoff) {
 			return nil, ctx.Err()
