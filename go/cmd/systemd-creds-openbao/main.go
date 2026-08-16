@@ -149,12 +149,8 @@ func run() int {
 		return 1
 	}
 
-	// The client's context governs its token renewal. A reload cancels it.
-	clientCtx, stopClient := context.WithCancel(ctx)
-	notify(log, "STATUS=authenticating with "+cfg.OpenBao.Auth.Method)
-	client, err := bao.New(clientCtx, cfg.OpenBao, log, retryStatus(log))
+	cfg, client, stopClient, err := authenticate(ctx, log, *configPath, cfg)
 	if err != nil {
-		stopClient()
 		if ctx.Err() != nil {
 			log.Info("shutting down on signal")
 			return 0
@@ -346,6 +342,36 @@ func watchdogTicks(log *slog.Logger) <-chan time.Time {
 func notify(log *slog.Logger, state string) {
 	if _, err := daemon.SdNotify(false, state); err != nil {
 		log.Warn("failed to notify the service manager", "ERROR", err)
+	}
+}
+
+// authenticate builds the OpenBao client at startup, waiting out an outage.
+// The client's context governs its token renewal, and a reload cancels it.
+// The wait can outlast a reload, which the service manager folds into the
+// pending start without a signal, so once the client is up the configuration
+// is read again, and when its [openbao] section changed the client is built
+// again from that. It returns the configuration the client belongs to.
+func authenticate(ctx context.Context, log *slog.Logger, configPath string, cfg *config.Config) (*config.Config, *bao.Client, context.CancelFunc, error) {
+	for {
+		clientCtx, stopClient := context.WithCancel(ctx)
+		notify(log, "STATUS=authenticating with "+cfg.OpenBao.Auth.Method)
+		client, err := bao.New(clientCtx, cfg.OpenBao, log, retryStatus(log))
+		if err != nil {
+			stopClient()
+			return nil, nil, nil, err
+		}
+		fresh, err := loadConfig(configPath)
+		if err != nil {
+			log.Warn("configuration does not load after authenticating, keeping the one read at startup", "PATH", configPath, "ERROR", err)
+			return cfg, client, stopClient, nil
+		}
+		if fresh.OpenBao == cfg.OpenBao {
+			return fresh, client, stopClient, nil
+		}
+		log.Info("configuration changed while authenticating, authenticating again", "PATH", configPath)
+		stopClient()
+		client.RevokeSelf(context.WithoutCancel(ctx))
+		cfg = fresh
 	}
 }
 

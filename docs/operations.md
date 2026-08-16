@@ -44,6 +44,8 @@ dropping the socket or restarting the daemon:
   outlasts the 30 seconds a reload waits) leaves the previous configuration
   serving. `systemctl reload` exits 0 either way, so the journal is the only
   signal.
+- While the daemon is still authenticating, a reload waits for that to
+  finish, then applies the configuration file as it stands.
 - The token the previous configuration held is revoked shortly after the
   reload, and on shutdown right away, so audit logs show a revoke-self per
   replaced login. A token from `token_file` is never revoked, and a replaced
