@@ -156,7 +156,7 @@ in
       def openbao_is_active(_last_try):
           # Unsealed is not writable: a restarted raft node rejoins a standby.
           status, output = machine.execute("bao status")
-          return status == 0 and json.loads(output).get("is_self", True)
+          return status == 0 and json.loads(output).get("is_self", False)
 
 
       start_all()
