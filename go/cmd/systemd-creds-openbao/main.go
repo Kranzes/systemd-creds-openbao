@@ -299,11 +299,18 @@ func (s *service) reload(ctx context.Context) {
 }
 
 // status summarizes for `systemctl status` what is in effect and how many
-// requests have been served and refused since the daemon started.
+// requests have been served and refused since the daemon started. A request
+// answered from the stale cache counts as served, and once there has been
+// one the line says how many, so an outage the cache covered shows there and
+// not only in the journal.
 func (s *service) status() string {
 	served, refused := s.srv.Stats()
-	return fmt.Sprintf("STATUS=serving %d credential rules, authenticated with %s; %d served, %d refused",
-		len(s.cfg.Credentials), s.cfg.OpenBao.Auth.Method, served, refused)
+	stale := ""
+	if n := s.cache.StaleServed(); n > 0 {
+		stale = fmt.Sprintf(" (%d stale)", n)
+	}
+	return fmt.Sprintf("STATUS=serving %d credential rules, authenticated with %s; %d served%s, %d refused",
+		len(s.cfg.Credentials), s.cfg.OpenBao.Auth.Method, served, stale, refused)
 }
 
 // notifyReady reports readiness along with the status summary. The watchdog

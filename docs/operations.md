@@ -83,6 +83,10 @@ a reload but not a restart, so the fallback covers a machine that fetched the
 credential before the outage, not one that boots during it. Consumers on that
 machine wait for the daemon instead ([Starting](#starting)).
 
+Each request served this way is logged with the age of the data, and
+`systemctl status` counts them next to the served total, as `5 served
+(2 stale)`, until the daemon restarts.
+
 ### Failing closed
 
 To fail closed rather than start with an empty secret:

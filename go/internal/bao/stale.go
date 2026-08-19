@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"maps"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/kranzes/systemd-creds-openbao/go/internal/config"
@@ -37,6 +38,10 @@ type StaleCache struct {
 	// refills, and in exchange the counter cannot collide and holds no
 	// per-key state that a requester could grow.
 	gen uint64
+
+	// stale counts the reads answered with a remembered response, for the
+	// status line.
+	stale atomic.Uint64
 }
 
 type entry struct {
@@ -117,6 +122,12 @@ func (s *StaleCache) removeExpired() {
 	})
 }
 
+// StaleServed returns how many reads were answered with a remembered
+// response since the cache was created.
+func (s *StaleCache) StaleServed() uint64 {
+	return s.stale.Load()
+}
+
 // Swap installs the client and max age a reload produced. Entries
 // carry over, so a reload during an outage keeps the fallback. Disabling
 // drops them, since secret material is only retained while it can be served.
@@ -166,6 +177,7 @@ func (s *StaleCache) Read(ctx context.Context, key config.SecretRef) (map[string
 	}
 	if age := s.now().Sub(e.at); age <= s.maxAge {
 		s.log.Warn("read failed, serving stale secret data", "SECRET_PATH", key.Location(), "AGE", age, "ERROR", err)
+		s.stale.Add(1)
 		return cloneData(e.data), nil
 	}
 	// Past maxAge the entry can never be served again, so it must not

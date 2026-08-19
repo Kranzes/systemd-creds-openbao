@@ -277,6 +277,13 @@ in
           machine.succeed(
               "journalctl -u systemd-creds-openbao SECRET_PATH=kv/systemd/creds-test --grep 'serving stale secret data'"
           )
+          # The counters restarted with the daemon two subtests ago. The
+          # status is sent after the credential, hence the wait.
+          machine.wait_until_succeeds(
+              "systemctl show -p StatusText --value systemd-creds-openbao.service | grep -qxF "
+              "'serving ${toString (builtins.length nodes.machine.services.systemd-creds-openbao.settings.credentials)}"
+              " credential rules, authenticated with token; 5 served (1 stale), 0 refused'"
+          )
 
       with subtest("Fresh reads resume once OpenBao is back"):
           machine.succeed("systemctl start openbao.service")

@@ -93,6 +93,35 @@ func TestStaleCacheServesStaleOnTransientError(t *testing.T) {
 	}
 }
 
+func TestStaleCacheCountsStaleServes(t *testing.T) {
+	inner := &flakyReader{data: map[string]any{"password": "hunter2"}}
+	c, clock := testStaleCache(inner, time.Hour)
+
+	if _, err := readKV(t, c); err != nil {
+		t.Fatal(err)
+	}
+	if got := c.StaleServed(); got != 0 {
+		t.Fatalf("a fresh read counted as stale: %d", got)
+	}
+	inner.failWith = errDown
+	for range 2 {
+		if _, err := readKV(t, c); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := c.StaleServed(); got != 2 {
+		t.Fatalf("expected 2 stale serves, got %d", got)
+	}
+	// A failed read past maxAge serves nothing, so it does not count.
+	*clock = clock.Add(2 * time.Hour)
+	if _, err := readKV(t, c); err == nil {
+		t.Fatal("expected the expired entry not to be served")
+	}
+	if got := c.StaleServed(); got != 2 {
+		t.Fatalf("a refused read counted as stale: %d", got)
+	}
+}
+
 // A hung server surfaces as a bare context error rather than a url.Error,
 // and is an outage like any other.
 func TestStaleCacheServesStaleOnContextDeadline(t *testing.T) {
