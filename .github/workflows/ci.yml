@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [master]
+    branches: [master, testing]
   pull_request:
 
 concurrency:
@@ -14,54 +14,65 @@ permissions:
 
 jobs:
   eval:
-    runs-on: ubuntu-latest
+    runs-on: namespace-profile-linux
     outputs:
       derivations: ${{ steps.eval.outputs.derivations }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: namespacelabs/nscloud-checkout-action@66f2dc6f6c42a8ac6c4e53473c4840006822831e # v9.0.1
+      - name: Set up nix cache
+        uses: namespacelabs/nscloud-cache-action@c5f8dab7560444c4bf8dbc64f1b203431873c547
+        with:
+          cache: nix
+      # The cache volume persists /nix across runs while the rootfs is fresh,
+      # so a receipt from an earlier run makes the installer skip everything
+      # it would recreate outside /nix, nix.conf and the build users included.
+      - name: Remove stale nix-installer receipt
+        run: sudo rm -f /nix/receipt.json /nix/nix-installer
       - uses: NixOS/nix-installer-action@62c1943b776c509394b550f3f983adc14e9212d6 # v1.0.0
         with:
           installer-version: 2.35.1
-      - uses: Mic92/hestia@b21a1aaf8c3d5c2e430c9ba278c0f78abd46a320 # v3.0.0
-        with:
-          version: v3.0.0
-          upstream-cache-filter: true
       - id: eval
         name: Run nix-eval-jobs
         run: |
           echo "derivations=$(
             nix run --impure --expr 'import (import ./lon.nix).nixpkgs { }' nix-eval-jobs -- \
               --select 'jobs: removeAttrs jobs [ "formatter" ]' \
-              --check-cache-status . | jq -cs 'map({attr, isCached})'
+              --check-cache-status . | jq -cs 'map({attr, isCached, drvPath})'
           )" >> "$GITHUB_OUTPUT"
 
   build:
     needs: eval
-    runs-on: ubuntu-latest
+    runs-on: namespace-profile-linux
     name: build (${{ matrix.derivation.attr }})
     strategy:
       fail-fast: false
       matrix:
         derivation: ${{ fromJson(needs.eval.outputs.derivations) }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: namespacelabs/nscloud-checkout-action@66f2dc6f6c42a8ac6c4e53473c4840006822831e # v9.0.1
         if: ${{ !matrix.derivation.isCached }}
+      - name: Set up nix cache
+        uses: namespacelabs/nscloud-cache-action@c5f8dab7560444c4bf8dbc64f1b203431873c547
+        if: ${{ !matrix.derivation.isCached }}
+        with:
+          cache: nix
+      # The cache volume persists /nix across runs while the rootfs is fresh,
+      # so a receipt from an earlier run makes the installer skip everything
+      # it would recreate outside /nix, nix.conf and the build users included.
+      - name: Remove stale nix-installer receipt
+        if: ${{ !matrix.derivation.isCached }}
+        run: sudo rm -f /nix/receipt.json /nix/nix-installer
       - uses: NixOS/nix-installer-action@62c1943b776c509394b550f3f983adc14e9212d6 # v1.0.0
         if: ${{ !matrix.derivation.isCached }}
         with:
           installer-version: 2.35.1
-      - uses: Mic92/hestia@b21a1aaf8c3d5c2e430c9ba278c0f78abd46a320 # v3.0.0
-        if: ${{ !matrix.derivation.isCached }}
-        with:
-          version: v3.0.0
-          upstream-cache-filter: true
-      - run: nix build -f . '${{ matrix.derivation.attr }}' -L
+      - run: nix build '${{ matrix.derivation.drvPath }}^*' -L
         if: ${{ !matrix.derivation.isCached }}
 
   result:
     needs: build
     if: always()
-    runs-on: ubuntu-latest
+    runs-on: namespace-profile-linux
     steps:
       - run: '[[ "${{ needs.build.result }}" == "success" ]]'
 
