@@ -21,7 +21,7 @@ buildGoModule (finalAttrs: {
   };
 
   goSum = ../go/go.sum;
-  vendorHash = "sha256-ONyuAUUOHspXSs7eGDzFktiUmCJIaYwCUFSnfEKsDzA=";
+  vendorHash = "sha256-x3nbPOx02/git+iczcrk+AG2E8gxubqH3iumPZXDwvM=";
 
   ldflags = [
     "-s"
