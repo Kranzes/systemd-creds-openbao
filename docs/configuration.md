@@ -41,6 +41,11 @@ outage. When the daemon cannot tell whether its own token caused a denial,
 the denial counts as an outage and the remembered secret may still be
 served.
 
+A dynamic secret comes with a lease, and the fallback drops it when that lease
+runs out, however long `serve_stale_for` is. Past the lease OpenBao has
+expired the credential, and the unit cannot tell, because what it got is not
+empty.
+
 ## `[openbao.auth]`
 
 | `method` | Required | Optional |
@@ -90,6 +95,13 @@ does not cross a `/`, and `?` and `[...]` work. `\` is matched literally, so
 a unit name carrying systemd's `\xNN` escaping is written as it appears,
 `unit = 'dev-disk\x2d*'` in a TOML literal string. `[` always opens a class,
 a name with a literal `[` is matched by `[[]`.
+
+Use single quotes for every unit pattern. TOML decodes `\xNN` inside a
+double-quoted string, so `unit = "home-my\x2ddata.mount"` becomes the glob
+`home-my-data.mount`, the mount unit for `/home/my/data` rather than the one
+for `/home/my-data`. Both are legal unit names, so the rule loads, the unit
+you meant matches nothing, and `/home/my/data` gets the secret. `\x2a` becomes
+a live `*` the same way.
 
 With `format = "field"`, a non-string field is served JSON-encoded. A binary
 credential is stored as base64 text and served decoded with
@@ -141,6 +153,12 @@ format = "json"
 The daemon only ever issues a read, so a path that needs a write (PKI issuance,
 transit) does not work. It does not track the leases those reads create, so
 each one expires on its own.
+
+Those leases belong to the daemon's token, and OpenBao revokes a token's
+leases along with the token. With `approle`, `cert` or `jwt` a reload or a
+shutdown revokes the token it replaces, which breaks the dynamic credentials
+every consumer still holds. See [Reloading](operations.md#reloading). A token
+from `token_file` is never revoked.
 
 ## `[server]`
 

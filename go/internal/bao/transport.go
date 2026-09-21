@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 )
 
 // responseSizeMax limits the body of an OpenBao response. The client library
@@ -15,15 +16,20 @@ import (
 // secret.
 const responseSizeMax = 4 * 1024 * 1024
 
-// limitTransport caps the response body of every OpenBao request.
-type limitTransport struct {
+// guardTransport caps the body of every OpenBao response and refuses a
+// redirect away from https.
+type guardTransport struct {
 	base  http.RoundTripper
 	limit int64
 }
 
-func (t *limitTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+func (t *guardTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	resp, err := t.base.RoundTrip(req)
 	if err != nil {
+		return nil, err
+	}
+	if err := checkDowngrade(req, resp); err != nil {
+		_ = resp.Body.Close()
 		return nil, err
 	}
 	if resp.ContentLength > t.limit {
@@ -33,6 +39,39 @@ func (t *limitTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	// One byte of slack, so a body of exactly the limit still reads to EOF.
 	resp.Body = &limitBody{body: resp.Body, left: t.limit + 1, limit: t.limit}
 	return resp, nil
+}
+
+// checkDowngrade refuses a redirect taking an https request to a plaintext
+// address, which would put BAO_TOKEN and login bodies in the clear. The client
+// library refuses it too. Checking it here makes it testable.
+func checkDowngrade(req *http.Request, resp *http.Response) error {
+	if req.URL.Scheme != "https" {
+		return nil
+	}
+	switch resp.StatusCode {
+	case http.StatusMovedPermanently, http.StatusFound, http.StatusSeeOther,
+		http.StatusTemporaryRedirect, http.StatusPermanentRedirect:
+	default:
+		return nil
+	}
+	// A Location with no scheme is relative and stays on https, and one that
+	// does not parse leads nowhere the library can follow.
+	if loc, err := url.Parse(resp.Header.Get("Location")); err == nil &&
+		loc.Scheme != "" && loc.Scheme != "https" {
+		return &protocolDowngradeError{to: loc.Scheme}
+	}
+	return nil
+}
+
+// protocolDowngradeError reports a redirect away from https. It has a type so
+// retryable can treat it as final. No retry fixes an address that answers with
+// one, so the startup fails instead of backing off forever.
+type protocolDowngradeError struct {
+	to string // the scheme the redirect pointed at
+}
+
+func (e *protocolDowngradeError) Error() string {
+	return fmt.Sprintf("refusing a redirect from https to %s, which would send the token in the clear", e.to)
 }
 
 // responseTooLargeError reports a response over responseSizeMax. It carries a

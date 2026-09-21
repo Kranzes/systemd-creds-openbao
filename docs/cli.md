@@ -49,7 +49,11 @@ A `+` covers a whole segment. When a placeholder that can be anything shares
 its segment with literal text (`site-{instance}`), the whole segment becomes
 `+`, and the policy marks that path with a comment.
 
-The only capability granted is `read`.
+Secrets get `read` and nothing else. The policy also covers the three paths
+the daemon uses on its own token, `auth/token/lookup-self`,
+`auth/token/renew-self` and `auth/token/revoke-self`, so a token created with
+`-no-default-policy`, or an auth role with `token_no_default_policy = true`,
+needs no other policy.
 
 On NixOS the same policy is exposed as the read-only `policyFile` option, see
 [Installation](installation.md#nixos).

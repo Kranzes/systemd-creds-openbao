@@ -15,19 +15,20 @@ import (
 	"github.com/kranzes/systemd-creds-openbao/go/internal/config"
 )
 
-// flakyReader serves fixed data until failWith is set.
+// flakyReader serves fixed data and lease until failWith is set.
 type flakyReader struct {
 	data     map[string]any
+	lease    time.Duration
 	failWith error
 	calls    int
 }
 
-func (f *flakyReader) Read(_ context.Context, _ config.SecretRef) (map[string]any, error) {
+func (f *flakyReader) ReadSecret(_ context.Context, _ config.SecretRef) (Secret, error) {
 	f.calls++
 	if f.failWith != nil {
-		return nil, f.failWith
+		return Secret{}, f.failWith
 	}
-	return f.data, nil
+	return Secret{Data: f.data, Lease: f.lease}, nil
 }
 
 var errDown = &url.Error{Op: "Get", URL: "http://bao", Err: errors.New("connection refused")}
@@ -213,11 +214,12 @@ func TestStaleCacheAuthoritativeErrorInvalidatesEntry(t *testing.T) {
 	}
 }
 
-// readerFunc lets a test drive each Read call from a function.
+// readerFunc lets a test answer each read from a function.
 type readerFunc func(ctx context.Context, ref config.SecretRef) (map[string]any, error)
 
-func (f readerFunc) Read(ctx context.Context, ref config.SecretRef) (map[string]any, error) {
-	return f(ctx, ref)
+func (f readerFunc) ReadSecret(ctx context.Context, ref config.SecretRef) (Secret, error) {
+	data, err := f(ctx, ref)
+	return Secret{Data: data}, err
 }
 
 // A slow successful read must not store data a concurrent authoritative
@@ -447,5 +449,78 @@ func TestStaleCacheSwapToZeroDropsEntries(t *testing.T) {
 	inner.failWith = errDown
 	if _, err := readKV(t, c); !errors.Is(err, errDown) {
 		t.Fatalf("expected the read error after disabling dropped the entries, got %v", err)
+	}
+}
+
+// The fallback must stop at the lease. Past it OpenBao has expired the
+// credential, and the unit cannot tell, because what it got is not empty.
+func TestStaleCacheStopsAtTheLease(t *testing.T) {
+	inner := &flakyReader{data: map[string]any{"password": "hunter2"}, lease: 10 * time.Minute}
+	c, clock := testStaleCache(inner, time.Hour)
+
+	if _, err := readKV(t, c); err != nil {
+		t.Fatal(err)
+	}
+	inner.failWith = errDown
+
+	*clock = clock.Add(9 * time.Minute)
+	got, err := readKV(t, c)
+	if err != nil {
+		t.Fatalf("within the lease, expected stale data: %v", err)
+	}
+	if got["password"] != "hunter2" {
+		t.Fatalf("got %v", got)
+	}
+
+	*clock = clock.Add(2 * time.Minute)
+	if _, err := readKV(t, c); !errors.Is(err, errDown) {
+		t.Fatalf("past the lease, expected the read error, got %v", err)
+	}
+	c.mu.Lock()
+	n := len(c.entries)
+	c.mu.Unlock()
+	if n != 0 {
+		t.Fatal("an entry past its lease stayed in memory")
+	}
+}
+
+// A lease longer than serve_stale_for changes nothing. The shorter of the two
+// wins.
+func TestStaleCacheMaxAgeStillBoundsALongLease(t *testing.T) {
+	inner := &flakyReader{data: map[string]any{"password": "hunter2"}, lease: 24 * time.Hour}
+	c, clock := testStaleCache(inner, time.Hour)
+
+	if _, err := readKV(t, c); err != nil {
+		t.Fatal(err)
+	}
+	inner.failWith = errDown
+	*clock = clock.Add(61 * time.Minute)
+	if _, err := readKV(t, c); !errors.Is(err, errDown) {
+		t.Fatalf("past serve_stale_for, expected the read error, got %v", err)
+	}
+}
+
+// A response the daemon could not parse is not an answer about the secret, so
+// it must not fail the request by itself or drop what covers the outage.
+func TestStaleCacheCoversAnUnparsableResponse(t *testing.T) {
+	inner := &flakyReader{data: map[string]any{"password": "hunter2"}}
+	c, _ := testStaleCache(inner, time.Hour)
+
+	if _, err := readKV(t, c); err != nil {
+		t.Fatal(err)
+	}
+	// What a proxy answering an HTML error page with status 200 leaves.
+	inner.failWith = errors.New("invalid character '<' looking for beginning of value")
+	got, err := readKV(t, c)
+	if err != nil {
+		t.Fatalf("expected stale data, got %v", err)
+	}
+	if got["password"] != "hunter2" {
+		t.Fatalf("got %v", got)
+	}
+
+	inner.failWith = errDown
+	if _, err := readKV(t, c); err != nil {
+		t.Fatalf("the unparsable response dropped the entry: %v", err)
 	}
 }

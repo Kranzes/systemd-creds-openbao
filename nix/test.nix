@@ -240,7 +240,12 @@ in
           machine.succeed(
               "bao policy write systemd-creds ${nodes.machine.services.systemd-creds-openbao.policyFile}"
           )
-          scoped = json.loads(machine.succeed("bao token create -policy=systemd-creds"))
+          # Without -no-default-policy the default policy would grant
+          # lookup-self and renew-self, which the daemon uses on every start
+          # and every renewal, so the subtest would pass either way.
+          scoped = json.loads(
+              machine.succeed("bao token create -no-default-policy -policy=systemd-creds")
+          )
           scoped_token = scoped["auth"]["client_token"]
           machine.succeed(f"umask 077; printf %s {scoped_token} > /run/keys/openbao-token")
           # Restart, so this checks the scoped token from a cold start. The
@@ -261,7 +266,9 @@ in
           # One reload both re-provisions the daemon's token file and
           # re-authenticates with it. Revoking the old token is what
           # proves the new one is in use.
-          rotated = json.loads(machine.succeed("bao token create -policy=systemd-creds"))
+          rotated = json.loads(
+              machine.succeed("bao token create -no-default-policy -policy=systemd-creds")
+          )
           rotated_token = rotated["auth"]["client_token"]
           machine.succeed(f"umask 077; printf %s {rotated_token} > /run/keys/openbao-token")
           machine.succeed("systemctl reload systemd-creds-openbao.service")
@@ -269,6 +276,10 @@ in
 
           fetch_credentials("/tmp/creds-rotated", ["binary"])
           t.assertEqual(machine.succeed("base64 -w0 /tmp/creds-rotated/binary").strip(), binary_b64)
+          # A daemon still on the revoked token would serve the same bytes
+          # from the stale cache, so only the missing fallback warning proves
+          # the read was fresh.
+          machine.fail("journalctl -u systemd-creds-openbao --grep 'serving stale secret data'")
 
       with subtest("Stale secrets are served while OpenBao is down"):
           machine.succeed("systemctl stop openbao.service")

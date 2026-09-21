@@ -28,6 +28,10 @@ type Client struct {
 	// report, when set, is told about each authentication attempt that New is
 	// going to retry.
 	report func(string)
+	// reauth reports that OpenBao rejected the token on a read, so the
+	// lifecycle logs in again now rather than at the next renewal. Buffered
+	// and sent without blocking, so many refusals in a row cost one login.
+	reauth chan struct{}
 }
 
 // Option adjusts the client New builds.
@@ -55,12 +59,12 @@ func New(ctx context.Context, cfg config.OpenBao, log *slog.Logger, opts ...Opti
 	// The library type-asserts Transport to *http.Transport while it configures
 	// TLS, the proxy, and unix:// addresses, all of which are done by the time
 	// NewClient returns.
-	apiCfg.HttpClient.Transport = &limitTransport{
+	apiCfg.HttpClient.Transport = &guardTransport{
 		base:  apiCfg.HttpClient.Transport,
 		limit: responseSizeMax,
 	}
 
-	c := &Client{api: ac, auth: cfg.Auth, log: log}
+	c := &Client{api: ac, auth: cfg.Auth, log: log, reauth: make(chan struct{}, 1)}
 	for _, opt := range opts {
 		opt(c)
 	}
@@ -70,29 +74,55 @@ func New(ctx context.Context, cfg config.OpenBao, log *slog.Logger, opts ...Opti
 	return c, nil
 }
 
+// errSecretNoData reports a KV version that is soft-deleted or destroyed.
+// Serving its empty payload would hand the unit a literal "null". OpenBao
+// answered, so it counts as authoritative.
+var errSecretNoData = errors.New("secret version is deleted or has no data")
+
+// Secret is one read's result. Lease is how long OpenBao says the data stays
+// valid, set by a dynamic secrets engine and often much shorter than
+// serve_stale_for. Zero means the secret does not expire on its own.
+type Secret struct {
+	Data  map[string]any
+	Lease time.Duration
+}
+
 // Read implements secrets.Reader.
 func (c *Client) Read(ctx context.Context, ref config.SecretRef) (map[string]any, error) {
+	secret, err := c.ReadSecret(ctx, ref)
+	return secret.Data, err
+}
+
+// ReadSecret reads one secret with its lease. StaleCache needs the lease, or
+// it keeps serving a dynamic secret OpenBao has already expired.
+func (c *Client) ReadSecret(ctx context.Context, ref config.SecretRef) (Secret, error) {
 	if ref.Raw {
 		secret, err := c.api.Logical().ReadWithContext(ctx, ref.Path)
 		if err != nil {
-			return nil, c.classifyForbidden(ctx, err)
+			return Secret{}, c.classifyForbidden(ctx, err)
 		}
 		if secret == nil || secret.Data == nil {
-			return nil, api.ErrSecretNotFound
+			return Secret{}, api.ErrSecretNotFound
 		}
-		return secret.Data, nil
+		return Secret{Data: secret.Data, Lease: leaseOf(secret)}, nil
 	}
 
 	secret, err := c.api.KVv2(ref.Mount).Get(ctx, ref.Path)
 	if err != nil {
-		return nil, c.classifyForbidden(ctx, err)
+		return Secret{}, c.classifyForbidden(ctx, err)
 	}
 	if secret.Data == nil {
-		// A soft-deleted or destroyed version has an empty payload.
-		// Serving it would hand the unit a literal "null".
-		return nil, errors.New("secret version is deleted or has no data")
+		return Secret{}, errSecretNoData
 	}
-	return secret.Data, nil
+	return Secret{Data: secret.Data, Lease: leaseOf(secret.Raw)}, nil
+}
+
+// leaseOf returns how long OpenBao says the secret stays valid, zero for none.
+func leaseOf(secret *api.Secret) time.Duration {
+	if secret == nil || secret.LeaseDuration <= 0 {
+		return 0
+	}
+	return time.Duration(secret.LeaseDuration) * time.Second
 }
 
 // authenticate logs in and starts the goroutine that keeps the token fresh.
@@ -200,6 +230,10 @@ func retryable(err error) bool {
 	if errors.As(err, &tooLarge) {
 		return false
 	}
+	var downgrade *protocolDowngradeError
+	if errors.As(err, &downgrade) {
+		return false
+	}
 	var respErr *api.ResponseError
 	if errors.As(err, &respErr) {
 		return respErr.StatusCode >= http.StatusInternalServerError ||
@@ -214,6 +248,30 @@ func retryable(err error) bool {
 	// the secret, and neither does a request the caller abandoned, so
 	// neither may count as authoritative and drop what StaleCache remembers.
 	return errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)
+}
+
+// authoritative reports whether err is OpenBao's own answer about the secret,
+// meaning a refusal it meant, a secret that is not there, or a response too
+// large to be one. Only such an answer replaces what StaleCache remembers. An
+// outage, a rejected token, a refused redirect or a body that did not parse
+// says nothing about the secret, so the remembered response stays.
+//
+// retryable answers the other question, whether to try again. A proxy serving
+// an HTML error page with status 200 is worth neither a retry nor the loss of
+// the fallback.
+func authoritative(err error) bool {
+	if retryable(err) {
+		return false
+	}
+	var tooLarge *responseTooLargeError
+	if errors.As(err, &tooLarge) {
+		return true
+	}
+	var respErr *api.ResponseError
+	if errors.As(err, &respErr) {
+		return true
+	}
+	return errors.Is(err, api.ErrSecretNotFound) || errors.Is(err, errSecretNoData)
 }
 
 // loginRetryable is retryable for the login path and the startup token check.
@@ -273,12 +331,56 @@ func (c *Client) classifyForbidden(ctx context.Context, err error) error {
 		return err
 	}
 	if errors.As(lookupErr, &respErr) && respErr.StatusCode == http.StatusForbidden {
+		c.signalReauth()
 		return &tokenFaultError{reason: "OpenBao rejected the daemon's token", err: err}
 	}
 	// The check got no answer, so the token stands unconfirmed either way.
 	return &tokenFaultError{
 		reason: fmt.Sprintf("checking the daemon's token after the refusal failed too (%v)", lookupErr),
 		err:    err,
+	}
+}
+
+// errTokenRejected ends a wait because the read path found the token rejected.
+// It is not a renewal failure, so no backoff follows.
+var errTokenRejected = errors.New("OpenBao rejected the daemon's token on a read")
+
+// signalReauth tells the token lifecycle that the token is gone. Only a
+// lookup-self that was itself refused may call it. An unanswered probe leaves
+// the token unconfirmed, and acting on that logs in over and over in an outage.
+func (c *Client) signalReauth() {
+	select {
+	case c.reauth <- struct{}{}:
+	default:
+	}
+}
+
+// drainReauth clears a pending signal, so a refusal the old token caused does
+// not throw away the new one.
+func (c *Client) drainReauth() {
+	select {
+	case <-c.reauth:
+	default:
+	}
+}
+
+// waitToken waits for d, or waits forever when d is zero. It returns
+// errTokenRejected when the read path reports the token rejected, and
+// ctx.Err() when the client is shutting down.
+func (c *Client) waitToken(ctx context.Context, d time.Duration) error {
+	var elapsed <-chan time.Time
+	if d > 0 {
+		timer := time.NewTimer(d)
+		defer timer.Stop()
+		elapsed = timer.C
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-c.reauth:
+		return errTokenRejected
+	case <-elapsed:
+		return nil
 	}
 }
 
@@ -399,33 +501,48 @@ func (c *Client) renewStaticToken(ctx context.Context) {
 }
 
 // manageTokenLifecycle renews the login token for as long as OpenBao permits
-// and, with canRelogin, re-authenticates once renewal is exhausted.
+// and, with canRelogin, re-authenticates once renewal is exhausted or the read
+// path reports the token rejected.
 func (c *Client) manageTokenLifecycle(ctx context.Context, secret *api.Secret, canRelogin bool) {
 	backoff := backoffStart
 	for {
-		ttl, err := secret.TokenTTL()
-		if err != nil || ttl <= 0 {
-			return // nothing to manage for a non-expiring token
-		}
-
-		var renewErr error
-		if renewable, _ := secret.TokenIsRenewable(); renewable {
-			if renewErr = c.renewUntilExpiry(ctx, secret); renewErr != nil {
-				if ctx.Err() != nil {
-					return
-				}
-				c.log.Warn("token renewal ended", "ERROR", renewErr)
+		var waitErr error
+		ttl, ttlErr := secret.TokenTTL()
+		renewable, _ := secret.TokenIsRenewable()
+		switch {
+		case ttlErr != nil || ttl <= 0:
+			// A token that does not expire has nothing to renew, but it can
+			// still be revoked, which only the read path finds out. Only the
+			// operator can replace a token from token_file.
+			if !canRelogin {
+				return
 			}
+			waitErr = c.waitToken(ctx, 0)
+		case renewable:
+			waitErr = c.renewUntilExpiry(ctx, secret)
+		default:
 			// Nothing to renew, so wait the lease out with a margin and
 			// re-authenticate instead.
-		} else if !sleep(ctx, ttl-ttl/10) {
+			waitErr = c.waitToken(ctx, ttl-ttl/10)
+		}
+		if ctx.Err() != nil {
 			return
 		}
+
+		rejected := errors.Is(waitErr, errTokenRejected)
+		renewFailed := waitErr != nil && !rejected
+		switch {
+		case rejected:
+			c.log.Warn("OpenBao rejected the daemon's token on a read")
+		case renewFailed:
+			c.log.Warn("token renewal ended", "ERROR", waitErr)
+		}
+
 		// The watcher gives up on the first renewal error, so unlike a lease
 		// run to exhaustion the token still has most of its life left. Back
 		// off rather than spin on whatever failed, and prefer retrying the
 		// renewal over minting a token per attempt.
-		if renewErr != nil {
+		if renewFailed {
 			if !sleep(ctx, backoff) {
 				return
 			}
@@ -434,12 +551,19 @@ func (c *Client) manageTokenLifecycle(ctx context.Context, secret *api.Secret, c
 			backoff = backoffStart
 		}
 		if !canRelogin {
-			if renewErr != nil && retryable(renewErr) {
+			if renewFailed && retryable(waitErr) {
 				continue
 			}
-			c.log.Error("OpenBao token is about to expire and cannot be re-acquired. Provide a fresh token and restart")
+			if rejected {
+				c.log.Error("OpenBao rejected the token and the daemon cannot acquire another. Provide a fresh token and reload")
+			} else {
+				c.log.Error("OpenBao token is about to expire and cannot be re-acquired. Provide a fresh token and restart")
+			}
 			return
 		}
+		// A signal that arrived on the way here was about the old token, so
+		// it must not throw away the new one too.
+		c.drainReauth()
 		next, err := c.loginWithRetry(ctx, false, nil)
 		if err != nil {
 			return // ctx canceled
@@ -486,6 +610,10 @@ func (c *Client) renewUntilExpiry(ctx context.Context, secret *api.Secret) error
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+		case <-c.reauth:
+			// The token is gone, so there is nothing left to renew. Ending
+			// the watch lets the lifecycle log in again.
+			return errTokenRejected
 		case err := <-watcher.DoneCh():
 			return err
 		case renewal := <-watcher.RenewCh():

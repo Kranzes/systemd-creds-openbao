@@ -50,6 +50,12 @@ dropping the socket or restarting the daemon:
   reload, and on shutdown right away, so audit logs show a revoke-self per
   replaced login. A token from `token_file` is never revoked, and a replaced
   token is left to its TTL when the daemon stops before the revocation runs.
+- Revoking a token revokes every lease it created. A rule reading a
+  [dynamic secrets engine](configuration.md#dynamic-secrets) creates one per
+  request, so with `approle`, `cert` or `jwt` a reload breaks the credentials
+  every consumer still holds, about twenty seconds later. A restart does it at
+  once. Restart those consumers with the daemon, or authenticate with
+  `token_file`.
 
 On NixOS, `nixos-rebuild switch` applies a `settings` change as exactly this
 reload. Changing `package` or `environment` restarts the daemon instead, and
@@ -82,6 +88,9 @@ Secrets remembered for [`serve_stale_for`](configuration.md#openbao) survive
 a reload but not a restart, so the fallback covers a machine that fetched the
 credential before the outage, not one that boots during it. Consumers on that
 machine wait for the daemon instead ([Starting](#starting)).
+
+A dynamic secret is remembered only for as long as its lease, so one that
+OpenBao has already expired is never served.
 
 Each request served this way is logged with the age of the data, and
 `systemctl status` counts them next to the served total, as `5 served

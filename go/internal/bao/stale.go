@@ -13,7 +13,7 @@ import (
 
 // reader is the part of *Client that StaleCache decorates.
 type reader interface {
-	Read(ctx context.Context, ref config.SecretRef) (map[string]any, error)
+	ReadSecret(ctx context.Context, ref config.SecretRef) (Secret, error)
 }
 
 // StaleCache decorates Client with a fallback for OpenBao outages. It
@@ -21,8 +21,9 @@ type reader interface {
 // fresh read fails with a transient error, so a service can still start
 // while OpenBao is unreachable. No fresh read is ever skipped, and an
 // authoritative refusal (permission denied, missing secret) is returned
-// as-is. The fallback only covers errors OpenBao never got to answer. It
-// implements secrets.Reader and is safe for concurrent use.
+// as-is. The fallback only covers errors OpenBao never got to answer, and it
+// stops at the lease a dynamic secret came with. It implements secrets.Reader
+// and is safe for concurrent use.
 type StaleCache struct {
 	log *slog.Logger
 	now func() time.Time
@@ -45,8 +46,20 @@ type StaleCache struct {
 }
 
 type entry struct {
-	data map[string]any
-	at   time.Time
+	data  map[string]any
+	at    time.Time
+	lease time.Duration
+}
+
+// servableFor returns how long past its fetch the entry may still be served.
+// maxAge limits it, and a shorter lease limits it more. Past the lease OpenBao
+// has expired the credential, and the unit cannot tell, because what it got is
+// not empty.
+func (e entry) servableFor(maxAge time.Duration) time.Duration {
+	if e.lease > 0 && e.lease < maxAge {
+		return e.lease
+	}
+	return maxAge
 }
 
 // sweepInterval is how often expired entries are reclaimed in the background.
@@ -114,11 +127,11 @@ func cloneValue(v any) any {
 	}
 }
 
-// removeExpired drops the entries past maxAge. The caller holds mu.
+// removeExpired drops entries that can no longer be served. The caller holds mu.
 func (s *StaleCache) removeExpired() {
 	now := s.now()
 	maps.DeleteFunc(s.entries, func(_ config.SecretRef, e entry) bool {
-		return now.Sub(e.at) > s.maxAge
+		return now.Sub(e.at) > e.servableFor(s.maxAge)
 	})
 }
 
@@ -145,13 +158,14 @@ func (s *StaleCache) Swap(inner reader, maxAge time.Duration) {
 }
 
 // Read implements secrets.Reader. It does the fresh read and falls back to the
-// remembered response only when that fails with a transient error.
+// remembered response only when that fails without an answer from OpenBao, and
+// only while serve_stale_for and the secret's lease both still cover it.
 func (s *StaleCache) Read(ctx context.Context, key config.SecretRef) (map[string]any, error) {
 	s.mu.Lock()
 	inner, gen := s.inner, s.gen
 	s.mu.Unlock()
 
-	data, err := inner.Read(ctx, key)
+	secret, err := inner.ReadSecret(ctx, key)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -159,11 +173,11 @@ func (s *StaleCache) Read(ctx context.Context, key config.SecretRef) (map[string
 		if s.maxAge > 0 && s.gen == gen {
 			// The cache keeps its own copy, so nothing a caller does to the
 			// returned data can change what a later outage serves.
-			s.entries[key] = entry{data: cloneData(data), at: s.now()}
+			s.entries[key] = entry{data: cloneData(secret.Data), at: s.now(), lease: secret.Lease}
 		}
-		return data, nil
+		return secret.Data, nil
 	}
-	if !retryable(err) {
+	if authoritative(err) {
 		// An authoritative answer supersedes the remembered response. A
 		// secret OpenBao revoked or deleted must not resurface during a
 		// later outage.
@@ -175,12 +189,19 @@ func (s *StaleCache) Read(ctx context.Context, key config.SecretRef) (map[string
 	if !ok {
 		return nil, err
 	}
-	if age := s.now().Sub(e.at); age <= s.maxAge {
+	age, limit := s.now().Sub(e.at), e.servableFor(s.maxAge)
+	if age <= limit {
 		s.log.Warn("read failed, serving stale secret data", "SECRET_PATH", key.Location(), "AGE", age, "ERROR", err)
 		s.stale.Add(1)
 		return cloneData(e.data), nil
 	}
-	// Past maxAge the entry can never be served again, so it must not
+	// Say so when the lease ran out first, since the request fails while
+	// serve_stale_for still looks like it covers the outage.
+	if limit < s.maxAge {
+		s.log.Warn("not serving stale secret data, the lease it came with has run out",
+			"SECRET_PATH", key.Location(), "AGE", age, "LEASE", e.lease, "ERROR", err)
+	}
+	// Past its limit the entry can never be served again, so it must not
 	// linger in memory.
 	delete(s.entries, key)
 	return nil, err

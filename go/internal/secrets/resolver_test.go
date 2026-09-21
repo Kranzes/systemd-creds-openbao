@@ -234,8 +234,10 @@ path = "p"
 func TestResolveBase64Encoding(t *testing.T) {
 	reader := &fakeReader{kv: map[string]map[string]any{
 		"kv/p": {
-			"blob":   base64.StdEncoding.EncodeToString([]byte{0x00, 0x01, 0xff}),
-			"broken": "!!!not-base64!!!",
+			"blob": base64.StdEncoding.EncodeToString([]byte{0x00, 0x01, 0xff}),
+			// Valid base64 up to the last two characters, so a decoder error
+			// would name an offset inside the value.
+			"broken": "aGVsbG8hIHdvcmxk!!",
 			"count":  3,
 		},
 	}}
@@ -255,8 +257,17 @@ encoding = "base64"
 	}
 
 	// Invalid base64 refuses the credential instead of serving mangled bytes.
-	if _, _, err := r.Resolve(context.Background(), credserver.Request{Unit: "a.service", Credential: "broken"}); err == nil {
-		t.Error("Resolve succeeded for invalid base64, want error")
+	// Every refused request logs the failure, so it names the field and not
+	// the offset the decoder gave up at.
+	_, _, err = r.Resolve(context.Background(), credserver.Request{Unit: "a.service", Credential: "broken"})
+	if err == nil {
+		t.Fatal("Resolve succeeded for invalid base64, want error")
+	}
+	if !strings.Contains(err.Error(), `field "broken"`) {
+		t.Errorf("error %q does not name the field", err)
+	}
+	if strings.Contains(err.Error(), "input byte") {
+		t.Errorf("error %q names a position inside the secret", err)
 	}
 
 	// A non-string field holds no base64 text to decode.

@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/BurntSushi/toml"
 )
@@ -56,7 +57,8 @@ type OpenBao struct {
 	// and serves it when a fresh read fails with a transient error (OpenBao
 	// unreachable, 5xx), for at most this long after it was fetched. An
 	// authoritative refusal (permission denied, missing secret) is never
-	// masked. Zero, the default, disables the fallback and retains nothing.
+	// masked. Leaving the key out turns the fallback off and retains
+	// nothing. An explicit zero is rejected, so there is one way to say it.
 	ServeStaleFor time.Duration `toml:"serve_stale_for"`
 }
 
@@ -208,6 +210,41 @@ func checkGlobBackslash(what, glob string) error {
 	return nil
 }
 
+// checkGlobPlaceholder rejects a glob holding a brace. A glob with no
+// metacharacters matches one name, so PinnedValues writes its text into the
+// generated policy, and brace text comes back out of that looking like a
+// placeholder. The policy then grants the whole segment as a wildcard for a
+// rule that can only ever read the one literal path.
+func checkGlobPlaceholder(what, glob string) error {
+	if i := strings.IndexAny(glob, "{}"); i >= 0 {
+		return fmt.Errorf("%s: glob %q contains %q, which the generated policy would read as a placeholder", what, glob, string(glob[i]))
+	}
+	return nil
+}
+
+// unitNameChars are the characters systemd allows in a unit name. The
+// backslash is one, since systemd writes every other byte as \xNN.
+const unitNameChars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789:-_.\\@"
+
+// globSyntaxChars are what path.Match reads as syntax rather than as text.
+const globSyntaxChars = "*?[]^"
+
+// checkUnitGlobChars rejects a unit glob with a character no unit name can
+// contain, which makes the rule match nothing. A TOML basic string is the
+// usual cause, since it decodes the escaping the pattern was meant to show.
+// "dev-disk\x2fby-label" becomes the glob "dev-disk/by-label", while the
+// literal string 'dev-disk\x2fby-label' keeps the name systemd uses. \x2d gets
+// past this check, since "home-my\x2ddata.mount" decodes to a name another
+// unit really has.
+func checkUnitGlobChars(glob string) error {
+	for _, r := range glob {
+		if !strings.ContainsRune(unitNameChars+globSyntaxChars, r) {
+			return fmt.Errorf("unit: glob %q contains %q, which no unit name can contain, so it matches no unit. systemd escapes that character as \\xNN, and a TOML basic string decodes the escape, so write the pattern in single quotes", glob, r)
+		}
+	}
+	return nil
+}
+
 func isLiteralGlob(glob string) bool {
 	return !strings.ContainsAny(glob, "*?[")
 }
@@ -289,14 +326,29 @@ func CheckSegments(what, p string) error {
 	return nil
 }
 
-// checkLiteral applies both checks a rule's literal path and mount must pass:
-// package secrets requests the text verbatim, and package policy writes it into
+// checkLiteral applies the checks a rule's literal path and mount must pass.
+// Package secrets requests the text verbatim, and package policy writes it into
 // the generated policy.
 func checkLiteral(what, p string) error {
 	if err := CheckSegments(what, p); err != nil {
 		return err
 	}
+	if err := checkControl(what, p); err != nil {
+		return err
+	}
 	return checkPolicyWildcards(what, p)
+}
+
+// checkControl rejects text holding a control character. An OpenBao policy has
+// no escape for one, so a path carrying it would only fail at "bao policy
+// write", naming the generated file rather than the rule behind it.
+func checkControl(what, p string) error {
+	for _, r := range p {
+		if unicode.IsControl(r) {
+			return fmt.Errorf("%s %q contains the control character %q, which an OpenBao policy cannot hold", what, p, r)
+		}
+	}
+	return nil
 }
 
 // checkPolicyWildcards rejects text carrying one of the wildcards OpenBao's
@@ -328,7 +380,7 @@ func Parse(data []byte) (*Config, error) {
 	}
 
 	cfg.applyDefaults(md)
-	if err := cfg.validate(); err != nil {
+	if err := cfg.validate(md); err != nil {
 		return nil, err
 	}
 	return &cfg, nil
@@ -375,7 +427,7 @@ func (c *Config) applyDefaults(md toml.MetaData) {
 	}
 }
 
-func (c *Config) validate() error {
+func (c *Config) validate(md toml.MetaData) error {
 	a := c.OpenBao.Auth
 	switch a.Method {
 	case AuthToken, AuthAppRole, AuthCert, AuthJWT:
@@ -420,6 +472,12 @@ func (c *Config) validate() error {
 	if err := checkDuration("openbao: serve_stale_for", c.OpenBao.ServeStaleFor, "1h"); err != nil {
 		return err
 	}
+	// An absent key is how the fallback is turned off, so an explicit zero
+	// would be a second spelling of it, and a bare 0 would read as the
+	// nanoseconds checkDuration rejects everywhere else.
+	if md.IsDefined("openbao", "serve_stale_for") && c.OpenBao.ServeStaleFor == 0 {
+		return fmt.Errorf("openbao: serve_stale_for must be positive, leave the key out to turn the fallback off")
+	}
 
 	for i := range c.Credentials {
 		if err := c.Credentials[i].validate(); err != nil {
@@ -440,10 +498,16 @@ func (r *Credential) validate() error {
 	if err := checkGlobBackslash("unit", r.Unit); err != nil {
 		return err
 	}
+	if err := checkGlobPlaceholder("unit", r.Unit); err != nil {
+		return err
+	}
 	if _, err := MatchGlob(r.Credential, "probe"); err != nil {
 		return fmt.Errorf("credential: invalid glob %q", r.Credential)
 	}
 	if err := checkGlobBackslash("credential", r.Credential); err != nil {
+		return err
+	}
+	if err := checkGlobPlaceholder("credential", r.Credential); err != nil {
 		return err
 	}
 
@@ -477,6 +541,12 @@ func (r *Credential) validate() error {
 		if err := checkLiteral("mount with the values its globs pin", expand.Replace(r.Mount)); err != nil {
 			return err
 		}
+	}
+	// Last of the unit checks, so a glob whose "+" reaches the generated
+	// policy is reported as the wildcard it becomes there. Naming the
+	// character would be true too, but would not say what the rule grants.
+	if err := checkUnitGlobChars(r.Unit); err != nil {
+		return err
 	}
 
 	switch r.Format {

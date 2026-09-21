@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"math/big"
@@ -25,6 +26,8 @@ import (
 	"testing"
 	"time"
 	"unicode/utf8"
+
+	"github.com/openbao/openbao/api/v2"
 
 	"github.com/kranzes/systemd-creds-openbao/go/internal/config"
 )
@@ -1011,5 +1014,214 @@ func TestMissingToken(t *testing.T) {
 	_, err := New(context.Background(), cfg, testLogger())
 	if err == nil || !strings.Contains(err.Error(), "no OpenBao token") {
 		t.Errorf("err = %v, want missing-token error", err)
+	}
+}
+
+// A dynamic secret carries a lease. A KV secret carries none.
+func TestReadSecretCarriesTheLease(t *testing.T) {
+	client := testClient(t)
+
+	dynamic, err := client.ReadSecret(context.Background(), config.SecretRef{Raw: true, Path: "database/creds/myapp"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dynamic.Lease != time.Hour {
+		t.Errorf("dynamic lease = %v, want 1h", dynamic.Lease)
+	}
+
+	static, err := client.ReadSecret(context.Background(), kvRef("myapp/db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if static.Lease != 0 {
+		t.Errorf("KV lease = %v, want none", static.Lease)
+	}
+}
+
+// retryable asks whether to try again. authoritative asks whether OpenBao
+// answered about the secret, which is what makes StaleCache forget it.
+func TestAuthoritativeAndRetryable(t *testing.T) {
+	// What a proxy answering an HTML error page with status 200 leaves.
+	unparsable := errors.New("invalid character '<' looking for beginning of value")
+
+	for _, tc := range []struct {
+		name          string
+		err           error
+		authoritative bool
+		retryable     bool
+	}{
+		{"permission denied", &api.ResponseError{StatusCode: http.StatusForbidden}, true, false},
+		{"secret not found", fmt.Errorf("%w: at secret/x", api.ErrSecretNotFound), true, false},
+		{"deleted version", errSecretNoData, true, false},
+		{"response too large", &responseTooLargeError{limit: 1}, true, false},
+		{"server error", &api.ResponseError{StatusCode: http.StatusBadGateway}, false, true},
+		{"connection refused", errDown, false, true},
+		{"rejected token", &tokenFaultError{reason: "rejected", err: errors.New("denied")}, false, true},
+		{"request deadline", context.DeadlineExceeded, false, true},
+		{"unparsable response", unparsable, false, false},
+		{"protocol downgrade", &protocolDowngradeError{to: "http"}, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := authoritative(tc.err); got != tc.authoritative {
+				t.Errorf("authoritative = %v, want %v", got, tc.authoritative)
+			}
+			if got := retryable(tc.err); got != tc.retryable {
+				t.Errorf("retryable = %v, want %v", got, tc.retryable)
+			}
+		})
+	}
+}
+
+// A read OpenBao refused because the token is gone has to re-authenticate at
+// once. Waiting for the next renewal leaves every read failing for up to half
+// the lease, and a token that never expires has no renewal coming at all.
+func TestRejectedTokenReauthenticates(t *testing.T) {
+	for _, lease := range []int{0, 3600} {
+		t.Run("lease_duration="+strconv.Itoa(lease), func(t *testing.T) {
+			var logins atomic.Int32
+			mux := http.NewServeMux()
+			mux.HandleFunc("/v1/auth/approle/login", func(w http.ResponseWriter, _ *http.Request) {
+				n := logins.Add(1)
+				w.Header().Set("Content-Type", "application/json")
+				if err := json.NewEncoder(w).Encode(map[string]any{
+					"auth": map[string]any{
+						"client_token": "token-" + strconv.Itoa(int(n)),
+						// Not renewable, so only the rejection can wake the
+						// lifecycle before the lease runs out.
+						"renewable":      false,
+						"lease_duration": lease,
+					},
+				}); err != nil {
+					t.Errorf("encoding response: %v", err)
+				}
+			})
+			// The read is refused and so is the token check behind it, which
+			// blames the token, not the secret.
+			denied := func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusForbidden)
+				if err := json.NewEncoder(w).Encode(map[string]any{"errors": []string{"permission denied"}}); err != nil {
+					t.Errorf("encoding response: %v", err)
+				}
+			}
+			mux.HandleFunc("/v1/secret/data/myapp/db", denied)
+			mux.HandleFunc("/v1/auth/token/lookup-self", denied)
+			srv := httptest.NewServer(mux)
+			t.Cleanup(srv.Close)
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			client, err := New(ctx, approleConfig(t, srv, "my-role", "my-secret"), testLogger())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := logins.Load(); got != 1 {
+				t.Fatalf("logins after startup = %d, want 1", got)
+			}
+
+			if _, err := client.Read(ctx, kvRef("myapp/db")); err == nil {
+				t.Fatal("expected the refused read to fail")
+			}
+			// The lifecycle runs in its own goroutine, so the login happens
+			// just after the read returns.
+			deadline := time.Now().Add(10 * time.Second)
+			for logins.Load() < 2 {
+				if time.Now().After(deadline) {
+					t.Fatal("the rejected token did not bring on a re-authentication")
+				}
+				time.Sleep(5 * time.Millisecond)
+			}
+		})
+	}
+}
+
+// A probe that goes unanswered leaves the token unconfirmed. Logging in again
+// on that would log in over and over during an outage.
+func TestUnconfirmedTokenDoesNotReauthenticate(t *testing.T) {
+	var logins atomic.Int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/auth/approle/login", func(w http.ResponseWriter, _ *http.Request) {
+		logins.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(map[string]any{
+			"auth": map[string]any{"client_token": "approle-token", "renewable": false, "lease_duration": 3600},
+		}); err != nil {
+			t.Errorf("encoding response: %v", err)
+		}
+	})
+	mux.HandleFunc("/v1/secret/data/myapp/db", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		if err := json.NewEncoder(w).Encode(map[string]any{"errors": []string{"permission denied"}}); err != nil {
+			t.Errorf("encoding response: %v", err)
+		}
+	})
+	// The probe answers 500, so the refusal stays unclassified.
+	mux.HandleFunc("/v1/auth/token/lookup-self", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	client, err := New(ctx, approleConfig(t, srv, "my-role", "my-secret"), testLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Read(ctx, kvRef("myapp/db")); err == nil {
+		t.Fatal("expected the refused read to fail")
+	}
+	time.Sleep(200 * time.Millisecond)
+	if got := logins.Load(); got != 1 {
+		t.Errorf("logins = %d, want the unconfirmed refusal to leave the token alone", got)
+	}
+}
+
+// An https address redirecting to plaintext would put the token in the clear.
+// The daemon refuses to follow it, and fails the startup rather than retrying.
+func TestLoginRefusesRedirectToPlaintext(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/auth/approle/login", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "http://"+r.Host+"/v1/auth/approle/login", http.StatusTemporaryRedirect)
+	})
+	srv := httptest.NewTLSServer(mux)
+	t.Cleanup(srv.Close)
+	t.Setenv("BAO_SKIP_VERIFY", "true")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	_, err := New(ctx, approleConfig(t, srv, "my-role", "my-secret"), testLogger())
+	var downgrade *protocolDowngradeError
+	if !errors.As(err, &downgrade) {
+		t.Fatalf("err = %v, want the redirect refused as a protocol downgrade", err)
+	}
+}
+
+func TestCheckDowngrade(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		from     string
+		location string
+		refused  bool
+	}{
+		{"https to http", "https://bao.example.com/v1/x", "http://bao.example.com/v1/x", true},
+		{"https to https", "https://bao.example.com/v1/x", "https://other.example.com/v1/x", false},
+		{"relative stays on https", "https://bao.example.com/v1/x", "/v1/y", false},
+		{"http was never protected", "http://bao.example.com/v1/x", "http://other.example.com/v1/x", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, tc.from, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp := &http.Response{
+				StatusCode: http.StatusTemporaryRedirect,
+				Header:     http.Header{"Location": []string{tc.location}},
+			}
+			if refused := checkDowngrade(req, resp) != nil; refused != tc.refused {
+				t.Errorf("refused = %v, want %v", refused, tc.refused)
+			}
+		})
 	}
 }

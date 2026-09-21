@@ -19,13 +19,37 @@ const header = `# OpenBao policy for systemd-creds-openbao, generated with -prin
 # https://github.com/kranzes/systemd-creds-openbao/blob/master/docs/cli.md#-print-policy
 `
 
-// Grant is one path the generated policy allows the daemon's token to read.
+const selfHeader = `
+# The token the daemon itself holds. The "default" policy already grants these
+# three, so they matter for a token created with -no-default-policy or a role
+# with token_no_default_policy = true.
+`
+
+const secretsHeader = `
+# The secrets the credential rules read.
+`
+
+// Grant is one path the generated policy allows the daemon's token.
 type Grant struct {
 	// Path is the OpenBao policy path, where "+" is a single-segment wildcard.
 	Path string
+	// Capabilities are the OpenBao capabilities granted on Path.
+	Capabilities []string
 	// Widened reports that a segment mixing a placeholder with literal text had
 	// to become a whole wildcard, granting more than the rules can read.
 	Widened bool
+}
+
+// SelfGrants returns what the daemon needs on its own token, whatever the
+// rules are. Package bao reads lookup-self to check the token at startup and
+// to tell a refused read from a rejected token, updates renew-self to keep the
+// token alive, and updates revoke-self when a reload or shutdown drops it.
+func SelfGrants() []Grant {
+	return []Grant{
+		{Path: "auth/token/lookup-self", Capabilities: []string{"read"}},
+		{Path: "auth/token/renew-self", Capabilities: []string{"update"}},
+		{Path: "auth/token/revoke-self", Capabilities: []string{"update"}},
+	}
 }
 
 // Grants returns the paths rules need, deduplicated, in the order the rules
@@ -41,23 +65,38 @@ func Grants(rules []config.Credential) []Grant {
 			continue
 		}
 		at[p] = len(out)
-		out = append(out, Grant{Path: p, Widened: widened})
+		out = append(out, Grant{Path: p, Capabilities: []string{"read"}, Widened: widened})
 	}
 	return out
 }
 
-// Generate returns an HCL policy covering rules, ready for "bao policy write".
+// Generate returns an HCL policy covering rules and the daemon's own token,
+// ready for "bao policy write".
 func Generate(rules []config.Credential) string {
 	var b strings.Builder
 	b.WriteString(header)
+	b.WriteString(selfHeader)
+	for _, g := range SelfGrants() {
+		writeGrant(&b, g)
+	}
+	b.WriteString(secretsHeader)
 	for _, g := range Grants(rules) {
-		b.WriteString("\n")
-		if g.Widened {
-			b.WriteString("# NOTE: a placeholder shares this segment with literal text, so it is widened.\n")
-		}
-		fmt.Fprintf(&b, "path %q {\n  capabilities = [\"read\"]\n}\n", g.Path)
+		writeGrant(&b, g)
 	}
 	return b.String()
+}
+
+// writeGrant writes one grant as an HCL path block.
+func writeGrant(b *strings.Builder, g Grant) {
+	b.WriteString("\n")
+	if g.Widened {
+		b.WriteString("# NOTE: a placeholder shares this segment with literal text, so it is widened.\n")
+	}
+	quoted := make([]string, len(g.Capabilities))
+	for i, c := range g.Capabilities {
+		quoted[i] = fmt.Sprintf("%q", c)
+	}
+	fmt.Fprintf(b, "path %q {\n  capabilities = [%s]\n}\n", g.Path, strings.Join(quoted, ", "))
 }
 
 // policyPath returns the policy path a rule reads, and whether a segment had

@@ -277,6 +277,18 @@ func TestParseErrors(t *testing.T) {
 			want: "serve_stale_for must not be negative",
 		},
 		{
+			// Off is spelled by leaving the key out, so an explicit zero is
+			// a second spelling of the same thing.
+			name: "explicit zero serve_stale_for",
+			toml: "[openbao]\nserve_stale_for = \"0s\"",
+			want: "leave the key out",
+		},
+		{
+			name: "bare zero serve_stale_for",
+			toml: "[openbao]\nserve_stale_for = 0",
+			want: "leave the key out",
+		},
+		{
 			name: "bare integer serve_stale_for",
 			toml: "[openbao]\nserve_stale_for = 3600",
 			want: "a bare integer decodes as nanoseconds",
@@ -360,6 +372,43 @@ func TestParseErrors(t *testing.T) {
 			name: "literal unit glob pinning a parent segment",
 			toml: "[[credentials]]\nunit = \"..service\"\npath = \"apps/{prefix}/db\"",
 			want: "segment",
+		},
+		{
+			// A TOML basic string decodes \x2f, leaving a "/" that no unit
+			// name can carry.
+			name: "unit glob carrying a decoded escape",
+			toml: "[[credentials]]\nunit = \"dev-disk\\x2fby-label\"\npath = \"p\"",
+			want: "matches no unit",
+		},
+		{
+			name: "unit glob carrying a space",
+			toml: "[[credentials]]\nunit = \"my app.service\"\npath = \"p\"",
+			want: "matches no unit",
+		},
+		{
+			// A glob with no metacharacters is written into the policy as
+			// it stands, so brace text would come back out as a placeholder
+			// and widen the segment to a wildcard the rule cannot read.
+			name: "credential glob carrying a brace",
+			toml: "[[credentials]]\nunit = \"u.service\"\ncredential = \"tls{unit}key\"\npath = \"systemd/{credential}\"",
+			want: "would read as a placeholder",
+		},
+		{
+			name: "unit glob carrying a brace",
+			toml: "[[credentials]]\nunit = \"my{unit}app.service\"\npath = \"p\"",
+			want: "would read as a placeholder",
+		},
+		{
+			// An OpenBao policy has no escape for a control character, so
+			// the file would only fail at "bao policy write".
+			name: "control character in path",
+			toml: "[[credentials]]\nunit = \"u.service\"\npath = \"certs/\\u007Fnginx\"",
+			want: "control character",
+		},
+		{
+			name: "control character in mount",
+			toml: "[[credentials]]\nunit = \"u.service\"\nmount = \"kv\\u0007\"\npath = \"p\"",
+			want: "control character",
 		},
 	}
 
@@ -540,5 +589,24 @@ func TestPinnedValues(t *testing.T) {
 	// instead of package policy granting the segment as a wildcard.
 	if v, ok := PinnedValues("plain.service", "*")["{instance}"]; !ok || v != "" {
 		t.Errorf("PinnedValues[{instance}] = %q, %v, want %q, true", v, ok, "")
+	}
+}
+
+// A literal string keeps the backslash of an escaped unit name. The same text
+// in a basic string decodes to a different name.
+func TestParseAllowsEscapedUnitNames(t *testing.T) {
+	cfg, err := Parse([]byte("[[credentials]]\nunit = 'home-my\\x2ddata.mount'\npath = \"p\""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.Credentials[0].Unit; got != `home-my\x2ddata.mount` {
+		t.Fatalf("unit = %q, want the escape kept", got)
+	}
+	ok, err := MatchGlob(cfg.Credentials[0].Unit, `home-my\x2ddata.mount`)
+	if err != nil || !ok {
+		t.Errorf("MatchGlob = %v, %v, want the rule to match the escaped unit", ok, err)
+	}
+	if ok, _ := MatchGlob(cfg.Credentials[0].Unit, "home-my-data.mount"); ok {
+		t.Error("the rule also matches the unit for /home/my/data")
 	}
 }

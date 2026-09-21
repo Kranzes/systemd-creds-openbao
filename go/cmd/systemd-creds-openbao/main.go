@@ -79,8 +79,7 @@ func run() int {
 	flag.Parse()
 
 	if *showVersion {
-		fmt.Println("systemd-creds-openbao", resolvedVersion())
-		return 0
+		return writeStdout("systemd-creds-openbao " + resolvedVersion() + "\n")
 	}
 
 	if *resolveReq {
@@ -112,8 +111,7 @@ func run() int {
 			log.Error("no [[credentials]] rules are configured, so there is nothing to grant", "PATH", *configPath)
 			return 1
 		}
-		fmt.Print(policy.Generate(cfg.Credentials))
-		return 0
+		return writeStdout(policy.Generate(cfg.Credentials))
 	}
 	if *resolveReq {
 		req, err := credserver.NewRequest(flag.Arg(0), flag.Arg(1))
@@ -126,12 +124,10 @@ func run() int {
 			log.Error("request refused", "ERROR", err)
 			return 1
 		}
-		fmt.Println(describePlan(plan))
-		return 0
+		return writeStdout(describePlan(plan) + "\n")
 	}
 	if *checkOnly {
-		fmt.Println("configuration OK")
-		return 0
+		return writeStdout("configuration OK\n")
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
@@ -179,6 +175,12 @@ func run() int {
 		stopClient: stopClient,
 	}
 	defer func() {
+		// Stop accepting before the token goes. A connection accepted after
+		// the revoke gets an empty credential, while one never accepted
+		// waits in the kernel queue for the next instance.
+		for _, l := range listeners {
+			_ = l.Close()
+		}
 		svc.stopClient()
 		// Shutdown cuts in-flight requests off anyway, so the token can go
 		// right away instead of staying live until its TTL.
@@ -211,9 +213,9 @@ func run() int {
 		case <-watchdog:
 			notify(log, daemon.SdNotifyWatchdog)
 		case <-serveClosed:
-			// Nothing in the daemon closes a listener. The sockets are
-			// systemd's. Whatever did leaves requests queueing unanswered,
-			// so fail: the restart re-adopts the socket unit's fd.
+			// Only the shutdown closes a listener, and this loop is gone by
+			// then. Anything else closing one leaves requests queueing
+			// unanswered, so fail and let the restart re-adopt the fd.
 			log.Error("listener closed unexpectedly")
 			return 1
 		case <-srv.StatsUpdates():
@@ -404,6 +406,16 @@ func describePlan(p secrets.Plan) string {
 	default:
 		return fmt.Sprintf("%s field %q", head, p.Field)
 	}
+}
+
+// writeStdout writes s and returns the command's exit code. A policy cut short
+// by a full disk or a closed pipe must not exit 0.
+func writeStdout(s string) int {
+	if _, err := os.Stdout.WriteString(s); err != nil {
+		fmt.Fprintf(os.Stderr, "writing to stdout: %v\n", err)
+		return 1
+	}
+	return 0
 }
 
 func loadConfig(path string) (*config.Config, error) {

@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/kranzes/systemd-creds-openbao/go/internal/config"
@@ -130,7 +131,9 @@ func encodeField(value any, encoding string) ([]byte, error) {
 		if encoding == config.EncodingBase64 {
 			data, err := base64.StdEncoding.DecodeString(v)
 			if err != nil {
-				return nil, fmt.Errorf("decoding base64 value: %w", err)
+				// The decoder names the offset it gave up at, which every
+				// refused request would then log. Naming the field is enough.
+				return nil, errors.New("value is not valid base64")
 			}
 			return data, nil
 		}

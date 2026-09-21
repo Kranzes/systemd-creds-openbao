@@ -142,3 +142,39 @@ path = "systemd/site-{instance}/config"
 		t.Errorf("policy does not flag the widened segment:\n%s", got)
 	}
 }
+
+// The "default" policy allows the three calls the daemon makes on its own
+// token. A token created without it needs the generated policy to grant them.
+func TestGenerateGrantsTheDaemonsOwnToken(t *testing.T) {
+	r := rules(t, `
+[[credentials]]
+unit = "myapp.service"
+path = "myapp/database"
+`)
+
+	got := Generate(r)
+	for _, want := range []string{
+		"path \"auth/token/lookup-self\" {\n  capabilities = [\"read\"]\n}",
+		"path \"auth/token/renew-self\" {\n  capabilities = [\"update\"]\n}",
+		"path \"auth/token/revoke-self\" {\n  capabilities = [\"update\"]\n}",
+		"path \"kv/data/myapp/database\" {\n  capabilities = [\"read\"]\n}",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("policy does not grant\n%s\ngot:\n%s", want, got)
+		}
+	}
+}
+
+// The own-token grants belong to the daemon, not to a rule, so Grants leaves
+// them out.
+func TestGrantsCoverOnlyTheRules(t *testing.T) {
+	r := rules(t, `
+[[credentials]]
+unit = "myapp.service"
+path = "myapp/database"
+`)
+
+	if p := paths(Grants(r)); !slices.Equal(p, []string{"kv/data/myapp/database"}) {
+		t.Errorf("granted paths = %q, want only the rule's", p)
+	}
+}
