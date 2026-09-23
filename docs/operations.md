@@ -30,6 +30,13 @@ This orders it after `network-online.target` as well. `Requires=` in place of
 whenever the daemon restarts, on a package upgrade or after a crash as much as
 on `systemctl restart`.
 
+A target waits for every unit it wants, so a consumer ordered after the
+service also holds back the target that pulls it in. With
+`WantedBy=multi-user.target`, neither `multi-user.target` nor
+`graphical.target` is reached until OpenBao answers. On a machine that can
+boot offline, that blocks the graphical session. Pull such a consumer in
+from another unit instead, such as the service it belongs to.
+
 ## Reloading
 
 `systemctl reload systemd-creds-openbao` re-reads the configuration file without
